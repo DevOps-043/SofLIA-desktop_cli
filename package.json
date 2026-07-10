@@ -1,0 +1,24 @@
+{
+  "name": "soflia-engine-render-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SofLIA - Engine local Remotion render worker CLI",
+  "type": "module",
+  "bin": {
+    "soflia-engine-worker": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && node --test dist/__tests__/*.test.js",
+    "start": "node dist/cli.js"
+  },
+  "dependencies": {
+    "@remotion/renderer": "4.0.484",
+    "jszip": "^3.10.1",
+    "remotion": "4.0.484"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  }
+}
