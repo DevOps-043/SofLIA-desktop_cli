@@ -6,7 +6,17 @@ const dist = path.join(root, 'dist');
 
 function copyFile(source, target) {
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.copyFileSync(source, target);
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      fs.copyFileSync(source, target);
+      return;
+    } catch (error) {
+      if (!['EBUSY', 'EPERM'].includes(error.code) || attempt === 4) {
+        throw error;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    }
+  }
 }
 
 function copyDir(source, target) {
