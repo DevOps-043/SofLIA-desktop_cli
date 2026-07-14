@@ -6,8 +6,16 @@ import { downloadAndExtractBundle, sha256File } from './bundle.js';
 import { getWorkspaceDir } from './paths.js';
 
 export async function renderClaimedJob(client: SofliaWorkerApiClient, job: ClaimedJob): Promise<void> {
-  await client.progress(job.jobId, 10, 'Descargando bundle Remotion', 'bundle_download');
-  const serveUrl = await downloadAndExtractBundle(job.bundleUrl, job.bundleHash);
+  const isExternalServeUrl = job.bundleType === 'serve_url';
+  await client.progress(
+    job.jobId,
+    10,
+    isExternalServeUrl ? 'Usando sitio Remotion aprobado' : 'Descargando bundle Remotion',
+    isExternalServeUrl ? 'external_serve_url' : 'bundle_download',
+  );
+  const serveUrl = isExternalServeUrl
+    ? job.bundleUrl
+    : await downloadAndExtractBundle(job.bundleUrl, job.bundleHash);
   const outputDir = path.join(getWorkspaceDir(), 'renders', job.jobId);
   const outputPath = path.join(outputDir, 'output.mp4');
 

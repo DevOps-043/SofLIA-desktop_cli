@@ -2,23 +2,65 @@
   "name": "soflia-engine-render-worker",
   "version": "0.1.0",
   "private": true,
+  "author": "SofLIA - Engine",
   "description": "SofLIA - Engine local Remotion render worker CLI",
   "type": "module",
+  "main": "dist/electron-main.js",
   "bin": {
     "soflia-engine-worker": "./dist/cli.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "test": "tsc -p tsconfig.json && node --test dist/__tests__/*.test.js",
-    "start": "node dist/cli.js"
+    "build": "npm run build:main && npm run build:renderer",
+    "build:main": "node scripts/generate-icons.cjs && tsc -p tsconfig.json && node scripts/copy-electron-assets.cjs",
+    "build:renderer": "vite build",
+    "test": "npm run build && node --test dist/__tests__/*.test.js",
+    "start": "node dist/cli.js",
+    "electron:dev": "npm run build:main && node scripts/electron-dev.mjs",
+    "package:win": "npm run build && electron-builder --win nsis --x64"
+  },
+  "build": {
+    "appId": "com.soflia.engine.render-worker",
+    "productName": "SofLIA Engine Render Worker",
+    "icon": "build/icon.ico",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "shortcutName": "SofLIA Engine Render Worker"
+    }
   },
   "dependencies": {
     "@remotion/renderer": "4.0.484",
     "jszip": "^3.10.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
     "remotion": "4.0.484"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.9.3"
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "electron": "^43.1.0",
+    "electron-builder": "^26.15.3",
+    "typescript": "^5.9.3",
+    "vite": "^8.1.4"
   }
 }

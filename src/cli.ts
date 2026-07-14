@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 import * as fsp from 'node:fs/promises';
+import * as os from 'node:os';
 import { SofliaWorkerApiClient } from './api-client.js';
 import { loadConfig, saveConfig } from './config.js';
 import { log, logError, sanitizeLog } from './logging.js';
 import { getConfigPath, getWorkspaceDir } from './paths.js';
 import { renderClaimedJob } from './render.js';
+import { startLocalUiServer } from './ui-server.js';
+import { startWorkerLoop } from './worker-loop.js';
 
 function parseArgs(argv: string[]): { command: string; flags: Record<string, string> } {
   const [command = 'help', ...rest] = argv;
@@ -30,11 +33,21 @@ function printHelp(): void {
   console.log(`SofLIA - Engine Render Worker
 
 Commands:
+  ui [--port <port>]
+  link --api-url <url> --code <SLIA-000000>
   configure --api-url <url> --token <worker_token>
   doctor
   render --job-id <production_job_id>
-  start
+  start [--poll-interval-ms <ms>]
 `);
+}
+
+function normalizeApiUrl(apiUrl: string): string {
+  return apiUrl.replace(/\/+$/, '');
+}
+
+function getAppVersion(): string {
+  return process.env.npm_package_version || 'dev';
 }
 
 async function runConfigure(flags: Record<string, string>) {
@@ -43,10 +56,49 @@ async function runConfigure(flags: Record<string, string>) {
   }
 
   await saveConfig({
-    apiUrl: flags['api-url'],
+    apiUrl: normalizeApiUrl(flags['api-url']),
     token: flags.token,
   });
   log(`Configuracion guardada en ${getConfigPath()}`);
+}
+
+async function runLink(flags: Record<string, string>) {
+  if (!flags['api-url'] || !flags.code) {
+    throw new Error('link requiere --api-url y --code');
+  }
+
+  const apiUrl = normalizeApiUrl(flags['api-url']);
+  const client = new SofliaWorkerApiClient(apiUrl);
+  const result = await client.linkWorker({
+    code: flags.code,
+    deviceName: flags['device-name'] || os.hostname() || 'SofLIA Render Worker',
+    platform: process.platform,
+    arch: process.arch,
+    appVersion: getAppVersion(),
+  });
+
+  await saveConfig({
+    apiUrl,
+    token: result.workerToken,
+  });
+
+  const authenticatedClient = new SofliaWorkerApiClient(apiUrl, result.workerToken);
+  await authenticatedClient.heartbeat('ONLINE');
+
+  log(`Worker vinculado y configuracion guardada en ${getConfigPath()}`, {
+    workerId: result.worker.id,
+    deviceName: result.worker.device_name,
+    status: 'ONLINE',
+    tokenLast4: result.worker.token_last4,
+  });
+  console.log('Listo. Puedes ejecutar: node dist/cli.js doctor');
+}
+
+async function runUi(flags: Record<string, string>) {
+  const port = flags.port ? Number(flags.port) : undefined;
+  await startLocalUiServer({
+    port: Number.isFinite(port) && port ? port : undefined,
+  });
 }
 
 async function runDoctor() {
@@ -102,11 +154,26 @@ async function runRender(flags: Record<string, string>) {
   }
 }
 
+async function runStart(flags: Record<string, string>) {
+  const pollIntervalMs = flags['poll-interval-ms'] ? Number(flags['poll-interval-ms']) : undefined;
+  await startWorkerLoop({
+    pollIntervalMs: Number.isFinite(pollIntervalMs) && pollIntervalMs ? pollIntervalMs : undefined,
+  });
+}
+
 async function main() {
   const { command, flags } = parseArgs(process.argv.slice(2));
 
   if (command === 'configure') {
     await runConfigure(flags);
+    return;
+  }
+  if (command === 'link') {
+    await runLink(flags);
+    return;
+  }
+  if (command === 'ui') {
+    await runUi(flags);
     return;
   }
   if (command === 'doctor') {
@@ -118,7 +185,8 @@ async function main() {
     return;
   }
   if (command === 'start') {
-    throw new Error('start queda reservado para MVP 2. Usa render --job-id en MVP 1.');
+    await runStart(flags);
+    return;
   }
 
   printHelp();
