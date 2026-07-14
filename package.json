@@ -2,6 +2,7 @@
   "name": "soflia-engine-render-worker",
   "version": "0.1.0",
   "private": true,
+  "desktopName": "soflia-engine-render-worker",
   "author": {
     "name": "SofLIA - Engine",
     "email": "soporte@soflia.com"
@@ -49,7 +50,6 @@
     },
     "linux": {
       "icon": "assets/app-icon.png",
-      "desktopName": "soflia-engine-render-worker",
       "maintainer": "SofLIA - Engine <soporte@soflia.com>",
       "synopsis": "SofLIA - Engine local render worker",
       "description": "Aplicacion de escritorio para renderizar videos de SofLIA - Engine usando la computadora del usuario.",
