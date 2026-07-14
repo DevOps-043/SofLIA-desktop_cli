@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { APP_DISPLAY_VERSION, DEFAULT_API_URL } from '../shared/app-defaults';
 import './styles.css';
 
 type WorkerEvent = {
@@ -92,7 +93,7 @@ function BrandMark() {
 }
 
 function App() {
-  const [apiUrl, setApiUrl] = useState('http://localhost:3000');
+  const [apiUrl, setApiUrl] = useState(DEFAULT_API_URL);
   const [code, setCode] = useState('');
   const [theme, setTheme] = useState<'light' | 'dark'>(() => getInitialTheme());
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -196,7 +197,7 @@ function App() {
             <BrandMark />
             <div>
               <h1>SofLIA - Engine</h1>
-              <p>Worker local de render</p>
+              <p>Worker local de render · v{APP_DISPLAY_VERSION}</p>
             </div>
           </div>
           <button

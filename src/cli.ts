@@ -6,7 +6,6 @@ import { loadConfig, saveConfig } from './config.js';
 import { log, logError, sanitizeLog } from './logging.js';
 import { getConfigPath, getWorkspaceDir } from './paths.js';
 import { renderClaimedJob } from './render.js';
-import { startLocalUiServer } from './ui-server.js';
 import { startWorkerLoop } from './worker-loop.js';
 
 function parseArgs(argv: string[]): { command: string; flags: Record<string, string> } {
@@ -33,7 +32,6 @@ function printHelp(): void {
   console.log(`SofLIA - Engine Render Worker
 
 Commands:
-  ui [--port <port>]
   link --api-url <url> --code <SLIA-000000>
   configure --api-url <url> --token <worker_token>
   doctor
@@ -92,13 +90,6 @@ async function runLink(flags: Record<string, string>) {
     tokenLast4: result.worker.token_last4,
   });
   console.log('Listo. Puedes ejecutar: node dist/cli.js doctor');
-}
-
-async function runUi(flags: Record<string, string>) {
-  const port = flags.port ? Number(flags.port) : undefined;
-  await startLocalUiServer({
-    port: Number.isFinite(port) && port ? port : undefined,
-  });
 }
 
 async function runDoctor() {
@@ -170,10 +161,6 @@ async function main() {
   }
   if (command === 'link') {
     await runLink(flags);
-    return;
-  }
-  if (command === 'ui') {
-    await runUi(flags);
     return;
   }
   if (command === 'doctor') {

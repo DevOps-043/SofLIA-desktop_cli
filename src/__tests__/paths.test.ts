@@ -16,4 +16,10 @@ describe('paths', () => {
     assert.equal(dir.endsWith('soflia-engine-render-worker'), true);
     assert.equal(dir.includes('config'), true);
   });
+
+  it('uses Application Support on macOS', () => {
+    const dir = getAppDataDir('darwin', {});
+
+    assert.equal(dir.endsWith('/Library/Application Support/SofLIA Engine Render Worker'), true);
+  });
 });

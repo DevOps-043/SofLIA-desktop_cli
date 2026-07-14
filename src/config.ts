@@ -35,7 +35,7 @@ export async function saveConfigSettings(settings: Pick<WorkerConfig, 'closeToTr
 export async function loadConfig(): Promise<WorkerConfig> {
   const parsed = await loadOptionalConfig();
   if (!parsed.apiUrl || !parsed.token) {
-    throw new Error('Config incompleta. Ejecuta configure con api-url y token.');
+    throw new Error('Config incompleta. Vincula este equipo desde la app o ejecuta link con un codigo temporal.');
   }
 
   return {
