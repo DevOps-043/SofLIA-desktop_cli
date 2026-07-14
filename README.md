@@ -34,6 +34,13 @@ Build the Windows installer:
 npm run package:win
 ```
 
+Build installers for other platforms on their native OS:
+
+```powershell
+npm run package:mac
+npm run package:linux
+```
+
 The installer is generated under `release/`. Upload the generated `.exe` to the chosen public download location and set this in SofLIA - Engine web:
 
 ```env
@@ -43,3 +50,22 @@ NEXT_PUBLIC_SOFLIA_WORKER_DOWNLOAD_URL=https://.../SofLIA-Engine-Render-Worker-S
 The Electron app keeps the same backend contract as the CLI. In local development use `http://localhost:3000` as the API URL. In production use the Netlify/SofLIA - Engine site URL.
 
 The UI includes a `Mantener en segundo plano al cerrar` setting. When it is enabled, closing the window hides the app and keeps the worker alive. Use `Salir de la app` from the UI or `Salir` from the tray menu to stop the worker and close the program completely.
+
+## Release installers
+
+GitHub Actions builds installers from `.github/workflows/desktop-installers.yml`.
+
+Manual test build:
+
+1. Open GitHub Actions.
+2. Run `Desktop installers`.
+3. Download the generated artifacts for Windows, macOS, and Linux.
+
+Public release build:
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The workflow publishes installer assets to the GitHub Release for that tag. Use those release asset URLs from SofLIA - Engine's download section.

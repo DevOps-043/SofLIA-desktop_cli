@@ -5,5 +5,4 @@ dist/
 npm-debug.log*
 
 release/
-
-release/
+build/

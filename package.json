@@ -16,12 +16,13 @@
     "test": "npm run build && node --test dist/__tests__/*.test.js",
     "start": "node dist/cli.js",
     "electron:dev": "npm run build:main && node scripts/electron-dev.mjs",
-    "package:win": "npm run build && electron-builder --win nsis --x64"
+    "package:win": "npm run build && electron-builder --win nsis --x64 --publish never",
+    "package:mac": "npm run build && electron-builder --mac dmg zip --x64 --arm64 --publish never",
+    "package:linux": "npm run build && electron-builder --linux AppImage deb --x64 --publish never"
   },
   "build": {
     "appId": "com.soflia.engine.render-worker",
     "productName": "SofLIA Engine Render Worker",
-    "icon": "build/icon.ico",
     "directories": {
       "output": "release"
     },
@@ -35,6 +36,21 @@
       "target": [
         "nsis"
       ]
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.productivity"
+    },
+    "linux": {
+      "icon": "assets/app-icon.png",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility"
     },
     "nsis": {
       "oneClick": false,
