@@ -1,26 +1,43 @@
 import { SofliaWorkerApiClient } from './api-client.js';
+import type { ClaimedJob } from './api-client.js';
 import { loadConfig } from './config.js';
 import { log, logError, sanitizeLog } from './logging.js';
 import { renderClaimedJob } from './render.js';
+import type { WorkerRuntimeEvent } from './shared/worker-events.js';
 
 export interface WorkerLoopEvents {
-  onStatus?: (event: {
-    state: 'starting' | 'online' | 'idle' | 'claiming' | 'rendering' | 'completed' | 'error' | 'stopped';
-    message: string;
-    jobId?: string;
-    detail?: Record<string, unknown>;
-  }) => void;
+  onStatus?: (event: WorkerRuntimeEvent) => void;
 }
+
+type WorkerLoopClient = Pick<SofliaWorkerApiClient, 'heartbeat' | 'claimNext' | 'fail'>;
+
+type WorkerLoopDependencies = {
+  loadConfig: typeof loadConfig;
+  createClient: (apiUrl: string, token: string) => WorkerLoopClient;
+  renderJob: (
+    client: WorkerLoopClient,
+    job: ClaimedJob,
+    options: Parameters<typeof renderClaimedJob>[2],
+  ) => Promise<void>;
+  sleep: (ms: number) => Promise<void>;
+};
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function startWorkerLoop(
-  options: { pollIntervalMs?: number; signal?: AbortSignal } & WorkerLoopEvents = {},
+  options: { pollIntervalMs?: number; signal?: AbortSignal; dependencies?: Partial<WorkerLoopDependencies> } & WorkerLoopEvents = {},
 ): Promise<void> {
-  const config = await loadConfig();
-  const client = new SofliaWorkerApiClient(config.apiUrl, config.token);
+  const dependencies: WorkerLoopDependencies = {
+    loadConfig,
+    createClient: (apiUrl, token) => new SofliaWorkerApiClient(apiUrl, token),
+    renderJob: (client, job, renderOptions) => renderClaimedJob(client as SofliaWorkerApiClient, job, renderOptions),
+    sleep,
+    ...options.dependencies,
+  };
+  const config = await dependencies.loadConfig();
+  const client = dependencies.createClient(config.apiUrl, config.token);
   const pollIntervalMs = Math.max(1000, options.pollIntervalMs || 5000);
   let shouldStop = false;
   const emit = options.onStatus || (() => {});
@@ -50,22 +67,50 @@ export async function startWorkerLoop(
       const job = await client.claimNext();
       if (!job) {
         emit({ state: 'idle', message: 'Sin jobs pendientes' });
-        await sleep(pollIntervalMs);
+        await dependencies.sleep(pollIntervalMs);
         continue;
       }
 
       claimedJobId = job.jobId;
-      emit({ state: 'claiming', message: 'Job reclamado', jobId: job.jobId });
+      emit({
+        state: 'claiming',
+        message: 'Job reclamado',
+        jobId: job.jobId,
+        compositionId: job.compositionId,
+        percent: 0,
+        stage: 'claim',
+      });
       log('Job reclamado automaticamente', {
         jobId: job.jobId,
         compositionId: job.compositionId,
         bundleHash: job.bundleHash,
         propsHash: job.propsHash,
       });
-      emit({ state: 'rendering', message: 'Renderizando video', jobId: job.jobId });
-      await renderClaimedJob(client, job);
+      emit({
+        state: 'rendering',
+        message: 'Renderizando video',
+        jobId: job.jobId,
+        compositionId: job.compositionId,
+        percent: 0,
+        stage: 'render_start',
+      });
+      await dependencies.renderJob(client, job, {
+        onProgress: (progress) => {
+          emit({
+            state: 'rendering',
+            ...progress,
+          });
+        },
+      });
       log('Render completado', { jobId: job.jobId });
-      emit({ state: 'completed', message: 'Render completado', jobId: job.jobId });
+      emit({
+        state: 'completed',
+        message: 'Render completado',
+        jobId: job.jobId,
+        compositionId: job.compositionId,
+        percent: 100,
+        stage: 'complete',
+      });
     } catch (error) {
       const message = sanitizeLog(error instanceof Error ? error.message : String(error));
       logError('Error en worker start:', error);
@@ -81,7 +126,7 @@ export async function startWorkerLoop(
           logError('No se pudo reportar el fallo al API:', failError);
         }
       }
-      await sleep(pollIntervalMs);
+      await dependencies.sleep(pollIntervalMs);
     }
   }
 

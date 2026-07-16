@@ -49,11 +49,55 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Validate package version matches tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $packageVersion = node -p "require('./package.json').version"
+          $tagVersion = '${{ github.ref_name }}' -replace '^v', ''
+          if ($packageVersion -ne $tagVersion) {
+            throw "Tag ${{ github.ref_name }} does not match package.json version $packageVersion."
+          }
+
       - name: Test
         run: npm test
 
+      - name: Validate macOS signing secrets
+        if: matrix.name == 'macos'
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          $required = @(
+            'CSC_LINK',
+            'CSC_KEY_PASSWORD',
+            'APPLE_ID',
+            'APPLE_APP_SPECIFIC_PASSWORD',
+            'APPLE_TEAM_ID'
+          )
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Missing required GitHub secret for macOS signing/notarization: $name"
+            }
+          }
+
       - name: Package installer
+        if: matrix.name != 'macos'
         run: npm run ${{ matrix.script }}
+
+      - name: Package notarized macOS installer
+        if: matrix.name == 'macos'
+        run: npm run ${{ matrix.script }}
+        env:
+          CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Normalize release asset names
         shell: pwsh
@@ -69,6 +113,13 @@ jobs:
             if ($blockmap) {
               Copy-Item $blockmap.FullName release/downloads/SofLIA-Engine-Render-Worker-Windows-x64.exe.blockmap
             }
+
+            $latest = Get-ChildItem release -File -Filter 'latest.yml' | Select-Object -First 1
+            if (-not $latest) { throw 'Windows updater metadata latest.yml not found.' }
+            $metadata = Get-Content $latest.FullName -Raw
+            $metadata = $metadata -replace '(?m)^(\s*-\s*url:\s*).+$', '$1SofLIA-Engine-Render-Worker-Windows-x64.exe'
+            $metadata = $metadata -replace '(?m)^(path:\s*).+$', '$1SofLIA-Engine-Render-Worker-Windows-x64.exe'
+            Set-Content -Path release/downloads/latest.yml -Value $metadata -Encoding utf8NoBOM
           }
 
           if ('${{ matrix.name }}' -eq 'macos') {

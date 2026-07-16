@@ -5,6 +5,7 @@ import { ensureBrowser, renderMedia, selectComposition } from '@remotion/rendere
 import type { ClaimedJob, SofliaWorkerApiClient } from './api-client.js';
 import { downloadAndExtractBundle, sha256File } from './bundle.js';
 import { getWorkspaceDir } from './paths.js';
+import type { RenderProgressEvent } from './shared/worker-events.js';
 
 const require = createRequire(import.meta.url);
 
@@ -25,14 +26,42 @@ function getRemotionBinariesDirectory(): string | null {
     : null;
 }
 
-export async function renderClaimedJob(client: SofliaWorkerApiClient, job: ClaimedJob): Promise<void> {
+type RenderClaimedJobOptions = {
+  onProgress?: (event: RenderProgressEvent) => void;
+};
+
+async function reportProgress(
+  client: SofliaWorkerApiClient,
+  job: ClaimedJob,
+  percent: number,
+  message: string,
+  stage: string,
+  onProgress?: (event: RenderProgressEvent) => void,
+) {
+  onProgress?.({
+    jobId: job.jobId,
+    compositionId: job.compositionId,
+    percent,
+    message,
+    stage,
+  });
+  await client.progress(job.jobId, percent, message, stage);
+}
+
+export async function renderClaimedJob(
+  client: SofliaWorkerApiClient,
+  job: ClaimedJob,
+  options: RenderClaimedJobOptions = {},
+): Promise<void> {
   const isExternalServeUrl = job.bundleType === 'serve_url';
   const binariesDirectory = getRemotionBinariesDirectory();
-  await client.progress(
-    job.jobId,
+  await reportProgress(
+    client,
+    job,
     10,
     isExternalServeUrl ? 'Usando sitio Remotion aprobado' : 'Descargando bundle Remotion',
     isExternalServeUrl ? 'external_serve_url' : 'bundle_download',
+    options.onProgress,
   );
   const serveUrl = isExternalServeUrl
     ? job.bundleUrl
@@ -43,7 +72,7 @@ export async function renderClaimedJob(client: SofliaWorkerApiClient, job: Claim
   await fsp.mkdir(outputDir, { recursive: true });
   await ensureBrowser();
 
-  await client.progress(job.jobId, 25, 'Resolviendo composicion', 'composition_select');
+  await reportProgress(client, job, 25, 'Resolviendo composicion', 'composition_select', options.onProgress);
   const composition = await selectComposition({
     serveUrl,
     id: job.compositionId,
@@ -65,12 +94,19 @@ export async function renderClaimedJob(client: SofliaWorkerApiClient, job: Claim
       const percent = Math.round(30 + progress * 55);
       if (percent > lastPercent) {
         lastPercent = percent;
-        void client.progress(job.jobId, percent, `Renderizando fotogramas (${Math.round(progress * 100)}%)`, 'render');
+        void reportProgress(
+          client,
+          job,
+          percent,
+          `Renderizando fotogramas (${Math.round(progress * 100)}%)`,
+          'render',
+          options.onProgress,
+        );
       }
     },
   });
 
-  await client.progress(job.jobId, 90, 'Subiendo video final', 'upload');
+  await reportProgress(client, job, 90, 'Subiendo video final', 'upload', options.onProgress);
   const video = await fsp.readFile(outputPath);
   const uploadResponse = await fetch(job.outputUploadUrl, {
     method: 'PUT',
