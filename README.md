@@ -29,14 +29,14 @@ Incluye:
 - Opcion para cerrar completamente desde la configuracion o desde el icono de segundo plano.
 - Icono de app, instalador, bandeja del sistema y logo interno sincronizados desde `logo.png`.
 - Workflow de GitHub Actions para generar instaladores por sistema operativo.
-- Preparacion para firma y notarizacion de macOS en GitHub Actions.
+- Preparacion tecnica para firma y notarizacion de macOS, pendiente de activar cuando tengamos secrets.
 
 Limitaciones actuales:
 
 - La app muestra el progreso del job actual, pero no puede mostrar el total de videos en cola hasta que el backend entregue `queueTotal` o `queuePosition`.
 - No incluye modo offline.
 - La revocacion del worker todavia debe hacerse desde SofLIA - Engine.
-- Los instaladores macOS para usuarios finales requieren secrets de firma y notarizacion configurados en GitHub.
+- Los instaladores macOS aun no estan firmados ni notarizados, por lo que Gatekeeper puede bloquearlos.
 
 ## Uso para usuarios finales
 
@@ -85,9 +85,9 @@ macOS:
 npm run package:mac
 ```
 
-> Nota: los builds macOS para usuarios finales deben generarse desde GitHub Actions con firma Developer ID
-> y notarizacion de Apple. Un DMG local o un release sin notarizacion puede ser bloqueado por Gatekeeper con
-> mensajes como "esta danado y no puede abrirse" o "Apple no pudo verificar que no contenga software malicioso".
+> Nota: por ahora los builds macOS se generan sin firma Developer ID ni notarizacion de Apple.
+> macOS puede bloquearlos con mensajes como "esta danado y no puede abrirse" o
+> "Apple no pudo verificar que no contenga software malicioso". La firma/notarizacion se activara en una fase posterior.
 
 Linux:
 
@@ -161,9 +161,11 @@ https://github.com/DevOps-043/SofLIA-desktop_cli/releases/latest/download/SofLIA
 https://github.com/DevOps-043/SofLIA-desktop_cli/releases/latest/download/SofLIA-Engine-Render-Worker-macOS-x64.dmg
 ```
 
-## Requisitos para publicar macOS
+## Firma y notarizacion macOS
 
-Para que macOS abra la app sin bloquearla, el workflow necesita estos secrets de GitHub:
+Por ahora el workflow no exige secrets de GitHub para macOS. Esto permite publicar la v0.1.8 sin bloquear el release.
+
+Cuando decidamos activar firma y notarizacion, necesitaremos configurar:
 
 - `MACOS_CSC_LINK`: certificado Developer ID Application exportado como `.p12` en base64.
 - `MACOS_CSC_KEY_PASSWORD`: password del `.p12`.
@@ -171,7 +173,7 @@ Para que macOS abra la app sin bloquearla, el workflow necesita estos secrets de
 - `APPLE_APP_SPECIFIC_PASSWORD`: app-specific password de Apple ID.
 - `APPLE_TEAM_ID`: Team ID de Apple Developer.
 
-Sin esos secrets, el job macOS falla antes de empaquetar para evitar publicar DMG no firmados o no notarizados.
+En ese momento tambien se debe volver a activar `notarize` en `package.json` y pasar los secrets al job macOS.
 
 ## Integracion con SofLIA - Engine
 

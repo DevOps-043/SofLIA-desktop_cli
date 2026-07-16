@@ -62,42 +62,8 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Validate macOS signing secrets
-        if: matrix.name == 'macos'
-        shell: pwsh
-        env:
-          CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          $required = @(
-            'CSC_LINK',
-            'CSC_KEY_PASSWORD',
-            'APPLE_ID',
-            'APPLE_APP_SPECIFIC_PASSWORD',
-            'APPLE_TEAM_ID'
-          )
-          foreach ($name in $required) {
-            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
-              throw "Missing required GitHub secret for macOS signing/notarization: $name"
-            }
-          }
-
       - name: Package installer
-        if: matrix.name != 'macos'
         run: npm run ${{ matrix.script }}
-
-      - name: Package notarized macOS installer
-        if: matrix.name == 'macos'
-        run: npm run ${{ matrix.script }}
-        env:
-          CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Normalize release asset names
         shell: pwsh

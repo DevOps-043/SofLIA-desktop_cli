@@ -53,8 +53,7 @@
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
-      "notarize": true
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist"
     },
     "linux": {
       "icon": "assets/app-icon.png",
