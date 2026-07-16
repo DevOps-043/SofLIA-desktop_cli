@@ -170,7 +170,7 @@ async function getStatus() {
     const config = await loadConfig();
     closeToTray = config.closeToTray !== false;
     const client = new SofliaWorkerApiClient(config.apiUrl, config.token);
-    const heartbeat = await client.heartbeat(workerAbortController ? 'BUSY' : 'ONLINE');
+    const heartbeat = await client.heartbeat(workerAbortController ? 'BUSY' : 'OFFLINE');
     return {
       configured: true,
       apiUrl: config.apiUrl,
@@ -252,7 +252,7 @@ ipcMain.handle('app:link', async (_event, input: { apiUrl: string; code: string 
   });
 
   await saveConfig({ apiUrl, token: result.workerToken });
-  await new SofliaWorkerApiClient(apiUrl, result.workerToken).heartbeat('ONLINE');
+  await new SofliaWorkerApiClient(apiUrl, result.workerToken).heartbeat('OFFLINE');
   return {
     workerId: result.worker.id,
     deviceName: result.worker.device_name,
