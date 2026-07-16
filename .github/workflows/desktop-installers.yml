@@ -126,9 +126,48 @@ jobs:
           path: artifacts
 
       - name: Publish release assets
-        uses: softprops/action-gh-release@v2
-        with:
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          files: |
-            artifacts/**/*
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+          IS_PRERELEASE: ${{ contains(github.ref_name, '-') }}
+        run: |
+          set -euo pipefail
+
+          mapfile -d '' files < <(find artifacts -type f -print0)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No release assets found in artifacts/."
+            exit 1
+          fi
+
+          retry() {
+            local attempt=1
+            local max_attempts=5
+            until "$@"; do
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "Command failed after $attempt attempts: $*"
+                return 1
+              fi
+              echo "Command failed, retrying in $((attempt * 20)) seconds: $*"
+              sleep $((attempt * 20))
+              attempt=$((attempt + 1))
+            done
+          }
+
+          release_args=(
+            "$TAG_NAME"
+            --title "Release $TAG_NAME desktop worker updates"
+            --notes "Instaladores de SofLIA Engine Render Worker $TAG_NAME."
+          )
+
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            release_args+=(--prerelease)
+          fi
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Release $TAG_NAME already exists. Uploading assets."
+          else
+            retry gh release create "${release_args[@]}"
+          fi
+
+          retry gh release upload "$TAG_NAME" "${files[@]}" --clobber
