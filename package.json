@@ -1,6 +1,6 @@
 {
   "name": "soflia-engine-render-worker",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "desktopName": "soflia-engine-render-worker",
   "author": {
@@ -35,6 +35,9 @@
       "package.json"
     ],
     "asar": true,
+    "asarUnpack": [
+      "node_modules/@remotion/compositor-*/*"
+    ],
     "win": {
       "icon": "build/icon.ico",
       "target": [
