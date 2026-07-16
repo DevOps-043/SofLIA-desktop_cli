@@ -22,22 +22,19 @@ jobs:
             script: package:win
             artifact: soflia-worker-windows
             files: |
-              release/*.exe
-              release/*.blockmap
+              release/downloads/*
           - name: macos
             os: macos-latest
             script: package:mac
             artifact: soflia-worker-macos
             files: |
-              release/*.dmg
-              release/*.zip
+              release/downloads/*
           - name: linux
             os: ubuntu-latest
             script: package:linux
             artifact: soflia-worker-linux
             files: |
-              release/*.AppImage
-              release/*.deb
+              release/downloads/*
 
     steps:
       - name: Checkout
@@ -57,6 +54,41 @@ jobs:
 
       - name: Package installer
         run: npm run ${{ matrix.script }}
+
+      - name: Normalize release asset names
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release/downloads | Out-Null
+
+          if ('${{ matrix.name }}' -eq 'windows') {
+            $exe = Get-ChildItem release -File -Filter '*.exe' | Select-Object -First 1
+            if (-not $exe) { throw 'Windows installer .exe not found.' }
+            Copy-Item $exe.FullName release/downloads/SofLIA-Engine-Render-Worker-Windows-x64.exe
+
+            $blockmap = Get-ChildItem release -File -Filter '*.exe.blockmap' | Select-Object -First 1
+            if ($blockmap) {
+              Copy-Item $blockmap.FullName release/downloads/SofLIA-Engine-Render-Worker-Windows-x64.exe.blockmap
+            }
+          }
+
+          if ('${{ matrix.name }}' -eq 'macos') {
+            foreach ($file in Get-ChildItem release -File | Where-Object { $_.Extension -in '.dmg', '.zip' }) {
+              $arch = if ($file.Name -match 'arm64') { 'arm64' } else { 'x64' }
+              Copy-Item $file.FullName "release/downloads/SofLIA-Engine-Render-Worker-macOS-$arch$($file.Extension)"
+            }
+          }
+
+          if ('${{ matrix.name }}' -eq 'linux') {
+            $appImage = Get-ChildItem release -File -Filter '*.AppImage' | Select-Object -First 1
+            if ($appImage) {
+              Copy-Item $appImage.FullName release/downloads/SofLIA-Engine-Render-Worker-Linux-x64.AppImage
+            }
+
+            $deb = Get-ChildItem release -File -Filter '*.deb' | Select-Object -First 1
+            if ($deb) {
+              Copy-Item $deb.FullName release/downloads/SofLIA-Engine-Render-Worker-Linux-x64.deb
+            }
+          }
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
