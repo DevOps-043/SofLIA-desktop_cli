@@ -1,11 +1,16 @@
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import { getConfigPath } from './paths.js';
+import { DEFAULT_WORKER_POWER_PROFILE, getWorkerPowerProfile } from './shared/worker-capacity.js';
+import type { WorkerPowerProfile } from './shared/worker-capacity.js';
 
 export interface WorkerConfig {
   apiUrl: string;
   token: string;
   closeToTray?: boolean;
+  powerProfile?: WorkerPowerProfile;
+  maxConcurrentJobs?: number;
+  renderConcurrency?: number;
 }
 
 export async function loadOptionalConfig(): Promise<Partial<WorkerConfig>> {
@@ -25,11 +30,19 @@ export async function saveConfig(config: WorkerConfig): Promise<void> {
   await fsp.writeFile(configPath, `${JSON.stringify({ ...current, ...config }, null, 2)}\n`, { mode: 0o600 });
 }
 
-export async function saveConfigSettings(settings: Pick<WorkerConfig, 'closeToTray'>): Promise<void> {
+export async function saveConfigSettings(settings: Partial<Pick<WorkerConfig, 'apiUrl' | 'closeToTray' | 'powerProfile'>>): Promise<void> {
   const configPath = getConfigPath();
   const current = await loadOptionalConfig();
   await fsp.mkdir(path.dirname(configPath), { recursive: true });
   await fsp.writeFile(configPath, `${JSON.stringify({ ...current, ...settings }, null, 2)}\n`, { mode: 0o600 });
+}
+
+export async function clearWorkerLink(): Promise<void> {
+  const configPath = getConfigPath();
+  const current = await loadOptionalConfig();
+  const { token: _token, ...settings } = current;
+  await fsp.mkdir(path.dirname(configPath), { recursive: true });
+  await fsp.writeFile(configPath, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
 }
 
 export async function loadConfig(): Promise<WorkerConfig> {
@@ -37,10 +50,14 @@ export async function loadConfig(): Promise<WorkerConfig> {
   if (!parsed.apiUrl || !parsed.token) {
     throw new Error('Config incompleta. Vincula este equipo desde la app o ejecuta link con un codigo temporal.');
   }
+  const powerProfile = getWorkerPowerProfile(parsed.powerProfile || DEFAULT_WORKER_POWER_PROFILE);
 
   return {
     apiUrl: parsed.apiUrl.replace(/\/+$/, ''),
     token: parsed.token,
     closeToTray: parsed.closeToTray !== false,
+    powerProfile: powerProfile.id,
+    maxConcurrentJobs: powerProfile.maxConcurrentJobs,
+    renderConcurrency: powerProfile.renderConcurrency,
   };
 }

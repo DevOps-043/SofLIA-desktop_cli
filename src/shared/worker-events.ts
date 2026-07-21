@@ -11,7 +11,10 @@ export type WorkerRuntimeState =
 export type WorkerRuntimeEvent = {
   state: WorkerRuntimeState;
   message: string;
+  jobType?: 'render' | 'template_build' | 'template_preview';
   jobId?: string;
+  buildId?: string;
+  templateVersionId?: string;
   compositionId?: string;
   percent?: number;
   stage?: string;
@@ -23,5 +26,5 @@ export type WorkerRuntimeEvent = {
 
 export type RenderProgressEvent = Pick<
   WorkerRuntimeEvent,
-  'jobId' | 'compositionId' | 'percent' | 'stage' | 'message'
+  'jobId' | 'jobType' | 'buildId' | 'templateVersionId' | 'compositionId' | 'percent' | 'stage' | 'message' | 'detail'
 >;

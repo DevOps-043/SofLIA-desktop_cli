@@ -4,16 +4,41 @@ import * as path from 'node:path';
 import JSZip from 'jszip';
 import { getWorkspaceDir } from './paths.js';
 
-export async function downloadAndExtractBundle(bundleUrl: string, bundleHash: string): Promise<string> {
+type DownloadAndExtractBundleOptions = {
+  requireSha256?: boolean;
+};
+
+function isSha256Hash(value: string): boolean {
+  return /^[a-f0-9]{64}$/i.test(value);
+}
+
+function cacheKeyForBundleHash(bundleHash: string): string {
+  const normalizedHash = bundleHash.trim().toLowerCase();
+  if (isSha256Hash(normalizedHash)) return normalizedHash;
+  return crypto.createHash('sha256').update(bundleHash).digest('hex');
+}
+
+export async function downloadAndExtractBundle(
+  bundleUrl: string,
+  bundleHash: string,
+  options: DownloadAndExtractBundleOptions = {},
+): Promise<string> {
+  const normalizedHash = bundleHash.trim().toLowerCase();
+  if (options.requireSha256 && !isSha256Hash(normalizedHash)) {
+    throw new Error('Bundle hash invalido: se requiere SHA-256 para compilar plantillas.');
+  }
+
   const workspaceDir = getWorkspaceDir();
-  const bundleRoot = path.join(workspaceDir, 'bundles', bundleHash);
+  const bundleRoot = path.join(workspaceDir, 'bundles', cacheKeyForBundleHash(bundleHash));
   const marker = path.join(bundleRoot, '.ready');
+  const indexPath = path.join(bundleRoot, 'index.html');
 
   try {
     await fsp.access(marker);
+    await fsp.access(indexPath);
     return bundleRoot;
   } catch {
-    // Extract below.
+    await fsp.rm(bundleRoot, { recursive: true, force: true });
   }
 
   const response = await fetch(bundleUrl);
@@ -22,6 +47,11 @@ export async function downloadAndExtractBundle(bundleUrl: string, bundleHash: st
   }
 
   const zipBuffer = Buffer.from(await response.arrayBuffer());
+  const actualHash = crypto.createHash('sha256').update(zipBuffer).digest('hex');
+  if (options.requireSha256 && actualHash !== normalizedHash) {
+    throw new Error('Bundle hash mismatch: el ZIP fuente no coincide con el SHA-256 esperado.');
+  }
+
   await fsp.rm(bundleRoot, { recursive: true, force: true });
   await fsp.mkdir(bundleRoot, { recursive: true });
 
@@ -36,6 +66,13 @@ export async function downloadAndExtractBundle(bundleUrl: string, bundleHash: st
     const destination = path.join(bundleRoot, normalized);
     await fsp.mkdir(path.dirname(destination), { recursive: true });
     await fsp.writeFile(destination, await file.async('nodebuffer'));
+  }
+
+  try {
+    await fsp.access(indexPath);
+  } catch {
+    await fsp.rm(bundleRoot, { recursive: true, force: true });
+    throw new Error('REMOTION_BUNDLE_INVALID: el ZIP extraido no contiene index.html en la raiz. Se requiere un bundle compilado de Remotion, no el ZIP fuente.');
   }
 
   await fsp.writeFile(marker, new Date().toISOString());

@@ -1,23 +1,37 @@
 import { SofliaWorkerApiClient } from './api-client.js';
-import type { ClaimedJob } from './api-client.js';
+import type { ClaimedJob, ClaimedRenderJob, ClaimedTemplateBuildJob } from './api-client.js';
 import { loadConfig } from './config.js';
 import { log, logError, sanitizeLog } from './logging.js';
 import { renderClaimedJob } from './render.js';
+import { buildTemplateJob } from './template-build.js';
+import { renderTemplatePreviewJob } from './template-preview.js';
 import type { WorkerRuntimeEvent } from './shared/worker-events.js';
 
 export interface WorkerLoopEvents {
   onStatus?: (event: WorkerRuntimeEvent) => void;
 }
 
-type WorkerLoopClient = Pick<SofliaWorkerApiClient, 'heartbeat' | 'claimNext' | 'fail'>;
+type WorkerLoopClient = Pick<SofliaWorkerApiClient, 'heartbeat' | 'claimNext' | 'fail'> & {
+  claimNextBatch?: () => Promise<ClaimedJob[]>;
+};
 
 type WorkerLoopDependencies = {
   loadConfig: typeof loadConfig;
   createClient: (apiUrl: string, token: string) => WorkerLoopClient;
   renderJob: (
     client: WorkerLoopClient,
-    job: ClaimedJob,
+    job: ClaimedRenderJob,
     options: Parameters<typeof renderClaimedJob>[2],
+  ) => Promise<void>;
+  buildTemplate: (
+    client: WorkerLoopClient,
+    job: ClaimedTemplateBuildJob,
+    options: Parameters<typeof buildTemplateJob>[2],
+  ) => Promise<void>;
+  renderTemplatePreview: (
+    client: WorkerLoopClient,
+    job: Extract<ClaimedJob, { jobType: 'template_preview' }>,
+    options: Parameters<typeof renderTemplatePreviewJob>[2],
   ) => Promise<void>;
   sleep: (ms: number) => Promise<void>;
 };
@@ -33,6 +47,8 @@ export async function startWorkerLoop(
     loadConfig,
     createClient: (apiUrl, token) => new SofliaWorkerApiClient(apiUrl, token),
     renderJob: (client, job, renderOptions) => renderClaimedJob(client as SofliaWorkerApiClient, job, renderOptions),
+    buildTemplate: (client, job, buildOptions) => buildTemplateJob(client as SofliaWorkerApiClient, job, buildOptions),
+    renderTemplatePreview: (client, job, previewOptions) => renderTemplatePreviewJob(client as SofliaWorkerApiClient, job, previewOptions),
     sleep,
     ...options.dependencies,
   };
@@ -56,82 +72,170 @@ export async function startWorkerLoop(
   log('Worker local iniciado', {
     apiUrl: config.apiUrl,
     pollIntervalMs,
+    powerProfile: config.powerProfile,
+    maxConcurrentJobs: config.maxConcurrentJobs,
+    renderConcurrency: config.renderConcurrency,
   });
-  emit({ state: 'starting', message: 'Worker local iniciado', detail: { apiUrl: config.apiUrl, pollIntervalMs } });
+  emit({
+    state: 'starting',
+    message: 'Worker local iniciado',
+    detail: {
+      apiUrl: config.apiUrl,
+      pollIntervalMs,
+      powerProfile: config.powerProfile,
+      maxConcurrentJobs: config.maxConcurrentJobs,
+      renderConcurrency: config.renderConcurrency,
+    },
+  });
 
-  while (!shouldStop) {
-    let claimedJobId: string | null = null;
+  async function processClaimedJob(job: ClaimedJob): Promise<void> {
+    const claimedJobType = job.jobType;
     try {
-      await client.heartbeat('ONLINE');
-      emit({ state: 'online', message: 'Conectado a SofLIA - Engine' });
-      const job = await client.claimNext();
-      if (!job) {
-        emit({ state: 'idle', message: 'Sin jobs pendientes' });
-        await dependencies.sleep(pollIntervalMs);
-        continue;
-      }
-
-      claimedJobId = job.jobId;
       emit({
         state: 'claiming',
         message: 'Job reclamado',
+        jobType: job.jobType === 'template_build' ? 'template_build' : job.jobType === 'template_preview' ? 'template_preview' : 'render',
         jobId: job.jobId,
+        buildId: job.jobType === 'template_build' || job.jobType === 'template_preview' ? job.buildId : undefined,
+        templateVersionId: job.jobType === 'template_build' || job.jobType === 'template_preview' ? job.templateVersionId : undefined,
         compositionId: job.compositionId,
         percent: 0,
         stage: 'claim',
+        detail: job.jobType === 'template_build'
+          ? {
+              buildId: job.buildId,
+              templateVersionId: job.templateVersionId,
+              bundleHash: job.bundleHash,
+              exportMode: job.exportMode,
+              outputStoragePath: job.outputStoragePath,
+            }
+          : job.jobType === 'template_preview'
+            ? {
+                previewId: job.previewId,
+                buildId: job.buildId,
+                templateVersionId: job.templateVersionId,
+                propsHash: job.propsHash,
+                posterStoragePath: job.posterStoragePath,
+              }
+          : {
+              bundleHash: job.bundleHash,
+              propsHash: job.propsHash,
+              outputStoragePath: job.outputStoragePath,
+            },
       });
       log('Job reclamado automaticamente', {
         jobId: job.jobId,
         compositionId: job.compositionId,
         bundleHash: job.bundleHash,
-        propsHash: job.propsHash,
+        propsHash: job.jobType === 'template_build' ? undefined : job.propsHash,
       });
       emit({
         state: 'rendering',
-        message: 'Renderizando video',
+        message: job.jobType === 'template_build' ? 'Compilando plantilla' : job.jobType === 'template_preview' ? 'Generando preview de plantilla' : 'Renderizando video',
+        jobType: job.jobType === 'template_build' ? 'template_build' : job.jobType === 'template_preview' ? 'template_preview' : 'render',
         jobId: job.jobId,
+        buildId: job.jobType === 'template_build' || job.jobType === 'template_preview' ? job.buildId : undefined,
+        templateVersionId: job.jobType === 'template_build' || job.jobType === 'template_preview' ? job.templateVersionId : undefined,
         compositionId: job.compositionId,
         percent: 0,
-        stage: 'render_start',
+        stage: job.jobType === 'template_build' ? 'template_build_start' : job.jobType === 'template_preview' ? 'template_preview_start' : 'render_start',
       });
-      await dependencies.renderJob(client, job, {
-        onProgress: (progress) => {
-          emit({
-            state: 'rendering',
-            ...progress,
-          });
-        },
-      });
-      log('Render completado', { jobId: job.jobId });
+
+      const isTemplateBuild = job.jobType === 'template_build';
+      const isTemplatePreview = job.jobType === 'template_preview';
+      if (isTemplateBuild) {
+        await dependencies.buildTemplate(client, job, {
+          onProgress: (progress) => {
+            emit({
+              state: 'rendering',
+              ...progress,
+            });
+          },
+        });
+      } else if (isTemplatePreview) {
+        await dependencies.renderTemplatePreview(client, job, {
+          onProgress: (progress) => {
+            emit({
+              state: 'rendering',
+              ...progress,
+            });
+          },
+        });
+      } else {
+        await dependencies.renderJob(client, job, {
+          renderConcurrency: config.renderConcurrency,
+          onProgress: (progress) => {
+            emit({
+              state: 'rendering',
+              ...progress,
+            });
+          },
+        });
+      }
+
+      log(isTemplateBuild ? 'Build de plantilla completado' : isTemplatePreview ? 'Preview de plantilla completado' : 'Render completado', { jobId: job.jobId });
       emit({
         state: 'completed',
-        message: 'Render completado',
+        message: isTemplateBuild ? 'Build de plantilla completado' : isTemplatePreview ? 'Preview de plantilla completado' : 'Render completado',
+        jobType: isTemplateBuild ? 'template_build' : isTemplatePreview ? 'template_preview' : 'render',
         jobId: job.jobId,
+        buildId: isTemplateBuild || isTemplatePreview ? job.buildId : undefined,
+        templateVersionId: isTemplateBuild || isTemplatePreview ? job.templateVersionId : undefined,
         compositionId: job.compositionId,
         percent: 100,
         stage: 'complete',
       });
     } catch (error) {
       const message = sanitizeLog(error instanceof Error ? error.message : String(error));
-      logError('Error en worker start:', error);
-      emit({ state: 'error', message, jobId: claimedJobId || undefined });
-      if (claimedJobId) {
-        try {
-          await client.fail(claimedJobId, {
-            errorCode: 'DESKTOP_WORKER_RENDER_FAILED',
-            message,
-            stage: 'cli_start',
-          });
-        } catch (failError) {
-          logError('No se pudo reportar el fallo al API:', failError);
+      logError('Error procesando job:', error);
+      emit({ state: 'error', message, jobId: job.jobId });
+      try {
+        await client.fail(job.jobId, {
+          errorCode: claimedJobType === 'template_build'
+            ? 'DESKTOP_WORKER_TEMPLATE_BUILD_FAILED'
+            : claimedJobType === 'template_preview'
+              ? 'DESKTOP_WORKER_TEMPLATE_PREVIEW_FAILED'
+              : 'DESKTOP_WORKER_RENDER_FAILED',
+          message,
+          stage: claimedJobType === 'template_build' ? 'template_build' : claimedJobType === 'template_preview' ? 'template_preview' : 'cli_start',
+        });
+      } catch (failError) {
+        logError('No se pudo reportar el fallo al API:', failError);
+      }
+    }
+  }
+
+  while (!shouldStop) {
+    try {
+      await client.heartbeat('ONLINE', { maxConcurrentJobs: config.maxConcurrentJobs });
+      emit({ state: 'online', message: 'Conectado a SofLIA - Engine' });
+      const jobs = client.claimNextBatch
+        ? await client.claimNextBatch()
+        : [await client.claimNext()].filter((job): job is ClaimedJob => Boolean(job));
+      if (jobs.length === 0) {
+        emit({ state: 'idle', message: 'Sin jobs pendientes' });
+        await dependencies.sleep(pollIntervalMs);
+        continue;
+      }
+
+      if (jobs.every((job) => job.jobType === 'template_preview')) {
+        await Promise.all(jobs.map((job) => processClaimedJob(job)));
+      } else {
+        for (const job of jobs) {
+          if (shouldStop) break;
+          await processClaimedJob(job);
         }
       }
+    } catch (error) {
+      const message = sanitizeLog(error instanceof Error ? error.message : String(error));
+      logError('Error en worker start:', error);
+      emit({ state: 'error', message });
       await dependencies.sleep(pollIntervalMs);
     }
   }
 
   try {
-    await client.heartbeat('OFFLINE');
+    await client.heartbeat('OFFLINE', { maxConcurrentJobs: config.maxConcurrentJobs });
   } catch {
     // Best-effort shutdown heartbeat only.
   }

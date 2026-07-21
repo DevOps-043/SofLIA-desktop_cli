@@ -3,8 +3,11 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('sofliaWorker', {
   getStatus: () => ipcRenderer.invoke('app:get-status'),
   link: (input) => ipcRenderer.invoke('app:link', input),
+  clearLink: () => ipcRenderer.invoke('app:clear-link'),
   startWorker: () => ipcRenderer.invoke('app:start-worker'),
   stopWorker: () => ipcRenderer.invoke('app:stop-worker'),
+  setApiUrl: (apiUrl) => ipcRenderer.invoke('app:set-api-url', apiUrl),
+  setPowerProfile: (powerProfile) => ipcRenderer.invoke('app:set-power-profile', powerProfile),
   setCloseToTray: (value) => ipcRenderer.invoke('app:set-close-to-tray', value),
   setTheme: (theme) => ipcRenderer.invoke('app:set-theme', theme),
   getUpdateStatus: () => ipcRenderer.invoke('app:get-update-status'),

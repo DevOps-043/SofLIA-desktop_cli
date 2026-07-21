@@ -1,13 +1,16 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, shell, Tray } from 'electron';
 import electronUpdater from 'electron-updater';
+import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SofliaWorkerApiClient } from './api-client.js';
-import { loadConfig, loadOptionalConfig, saveConfig, saveConfigSettings } from './config.js';
+import { clearWorkerLink, loadConfig, loadOptionalConfig, saveConfig, saveConfigSettings } from './config.js';
 import { sanitizeLog } from './logging.js';
-import { getConfigPath } from './paths.js';
+import { getAppDataDir, getConfigPath } from './paths.js';
+import { DEFAULT_WORKER_POWER_PROFILE, getWorkerPowerProfile } from './shared/worker-capacity.js';
 import type { AppUpdateState } from './shared/update-types.js';
+import { getWorkerStartMessage, getWorkerStatusMessage } from './worker-link-state.js';
 import { startWorkerLoop } from './worker-loop.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -16,8 +19,25 @@ const appVersion = app.getVersion() || 'dev';
 const { autoUpdater } = electronUpdater;
 type ThemeMode = 'light' | 'dark';
 
+function configureChromiumStoragePaths(): void {
+  const appDataDir = getAppDataDir();
+  const sessionDataDir = path.join(appDataDir, 'electron-session');
+  const cacheDir = path.join(appDataDir, 'electron-cache');
+  fs.mkdirSync(sessionDataDir, { recursive: true });
+  fs.mkdirSync(cacheDir, { recursive: true });
+  app.setPath('sessionData', sessionDataDir);
+  app.setPath('cache', cacheDir);
+}
+
+configureChromiumStoragePaths();
+
 if (process.platform === 'win32') {
   app.setAppUserModelId('com.soflia.engine.render-worker');
+}
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
 }
 
 let mainWindow: BrowserWindow | null = null;
@@ -248,6 +268,21 @@ function createWindow(): void {
     },
   });
 
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    console.error('Renderer load failed', sanitizeLog(JSON.stringify({ errorCode, errorDescription, validatedURL })));
+  });
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error('Renderer process gone', sanitizeLog(JSON.stringify(details)));
+  });
+
+  mainWindow.webContents.on('console-message', (event) => {
+    const { level, message } = event;
+    if (level === 'warning' || level === 'error') {
+      console.error('Renderer console:', sanitizeLog(message));
+    }
+  });
+
   if (rendererDevUrl) {
     mainWindow.loadURL(rendererDevUrl);
   } else {
@@ -269,23 +304,34 @@ async function getStatus() {
     const config = await loadConfig();
     closeToTray = config.closeToTray !== false;
     const client = new SofliaWorkerApiClient(config.apiUrl, config.token);
-    const heartbeat = await client.heartbeat(workerAbortController ? 'BUSY' : 'OFFLINE');
+    const heartbeat = await client.heartbeat(workerAbortController ? 'BUSY' : 'OFFLINE', {
+      maxConcurrentJobs: config.maxConcurrentJobs,
+    });
     return {
       configured: true,
       apiUrl: config.apiUrl,
       configPath: getConfigPath(),
       running: Boolean(workerAbortController),
       closeToTray,
+      powerProfile: config.powerProfile,
+      maxConcurrentJobs: config.maxConcurrentJobs,
+      renderConcurrency: config.renderConcurrency,
       worker: heartbeat.worker || heartbeat,
     };
   } catch (error) {
     const config = await loadOptionalConfig();
+    const powerProfile = getWorkerPowerProfile(config.powerProfile || DEFAULT_WORKER_POWER_PROFILE);
     closeToTray = config.closeToTray !== false;
     return {
       configured: false,
+      apiUrl: config.apiUrl,
+      configPath: getConfigPath(),
       running: Boolean(workerAbortController),
       closeToTray,
-      message: sanitizeLog(error instanceof Error ? error.message : String(error)),
+      powerProfile: powerProfile.id,
+      maxConcurrentJobs: powerProfile.maxConcurrentJobs,
+      renderConcurrency: powerProfile.renderConcurrency,
+      message: getWorkerStatusMessage(error),
     };
   }
 }
@@ -293,6 +339,16 @@ async function getStatus() {
 async function startWorker() {
   if (workerAbortController) {
     return { started: false, message: 'El worker ya esta corriendo.' };
+  }
+
+  try {
+    const config = await loadConfig();
+    await new SofliaWorkerApiClient(config.apiUrl, config.token).heartbeat('ONLINE', {
+      maxConcurrentJobs: config.maxConcurrentJobs,
+    });
+  } catch (error) {
+    const message = getWorkerStartMessage(error);
+    return { started: false, message };
   }
 
   workerAbortController = new AbortController();
@@ -327,7 +383,9 @@ async function stopWorker() {
   workerAbortController = null;
   try {
     const config = await loadConfig();
-    await new SofliaWorkerApiClient(config.apiUrl, config.token).heartbeat('OFFLINE');
+    await new SofliaWorkerApiClient(config.apiUrl, config.token).heartbeat('OFFLINE', {
+      maxConcurrentJobs: config.maxConcurrentJobs,
+    });
   } catch {
     // Best-effort only.
   }
@@ -339,6 +397,90 @@ async function requestQuit() {
   await stopWorker();
   app.quit();
   return { quitting: true };
+}
+
+async function clearLink() {
+  await stopWorker();
+  await clearWorkerLink();
+  send('worker:event', {
+    state: 'stopped',
+    message: 'Vinculacion local limpiada. Genera un codigo nuevo en SofLIA para conectar este equipo.',
+  });
+  return { cleared: true };
+}
+
+async function setApiUrl(_event: Electron.IpcMainInvokeEvent, rawApiUrl: string) {
+  const apiUrl = normalizeApiUrl(String(rawApiUrl || ''));
+  if (!/^https?:\/\/[\w.-]+(?::\d+)?(?:\/.*)?$/i.test(apiUrl)) {
+    throw new Error('Direccion de SofLIA invalida. Usa una URL http(s), por ejemplo http://localhost:3000.');
+  }
+
+  const shouldRestart = Boolean(workerAbortController);
+  if (shouldRestart) {
+    await stopWorker();
+  }
+
+  await saveConfigSettings({ apiUrl });
+
+  if (!shouldRestart) {
+    return { apiUrl, restarted: false, message: 'Direccion guardada. Inicia el worker para usarla.' };
+  }
+
+  const result = await startWorker();
+  const restarted = isActionStarted(result);
+  return {
+    apiUrl,
+    restarted,
+    message: restarted
+      ? 'Direccion guardada y worker reiniciado.'
+      : result.message || 'Direccion guardada, pero el worker no pudo reiniciarse.',
+  };
+}
+
+async function setPowerProfile(_event: Electron.IpcMainInvokeEvent, rawPowerProfile: string) {
+  const powerProfile = getWorkerPowerProfile(String(rawPowerProfile || ''));
+  const shouldRestart = Boolean(workerAbortController);
+  if (shouldRestart) {
+    await stopWorker();
+  }
+
+  await saveConfigSettings({ powerProfile: powerProfile.id });
+  const savedConfig = await loadOptionalConfig();
+  if (savedConfig.powerProfile !== powerProfile.id) {
+    throw new Error('No se pudo guardar el perfil de potencia en la configuracion local.');
+  }
+  send('app:settings', {
+    closeToTray,
+    powerProfile: powerProfile.id,
+    maxConcurrentJobs: powerProfile.maxConcurrentJobs,
+    renderConcurrency: powerProfile.renderConcurrency,
+  });
+
+  if (!shouldRestart) {
+    return {
+      powerProfile: powerProfile.id,
+      maxConcurrentJobs: powerProfile.maxConcurrentJobs,
+      renderConcurrency: powerProfile.renderConcurrency,
+      restarted: false,
+      message: 'Perfil de potencia guardado. Se aplicara al iniciar el worker.',
+    };
+  }
+
+  const result = await startWorker();
+  const restarted = isActionStarted(result);
+  return {
+    powerProfile: powerProfile.id,
+    maxConcurrentJobs: powerProfile.maxConcurrentJobs,
+    renderConcurrency: powerProfile.renderConcurrency,
+    restarted,
+    message: restarted
+      ? 'Perfil de potencia guardado y worker reiniciado.'
+      : result.message || 'Perfil guardado, pero el worker no pudo reiniciarse.',
+  };
+}
+
+function isActionStarted(value: unknown): value is { started: true } {
+  return Boolean(value && typeof value === 'object' && (value as { started?: unknown }).started === true);
 }
 
 ipcMain.handle('app:get-status', getStatus);
@@ -364,7 +506,10 @@ ipcMain.handle('app:link', async (_event, input: { apiUrl: string; code: string 
   });
 
   await saveConfig({ apiUrl, token: result.workerToken });
-  await new SofliaWorkerApiClient(apiUrl, result.workerToken).heartbeat('OFFLINE');
+  const linkedConfig = await loadConfig();
+  await new SofliaWorkerApiClient(apiUrl, result.workerToken).heartbeat('OFFLINE', {
+    maxConcurrentJobs: linkedConfig.maxConcurrentJobs,
+  });
   await startWorker();
   return {
     workerId: result.worker.id,
@@ -374,12 +519,16 @@ ipcMain.handle('app:link', async (_event, input: { apiUrl: string; code: string 
   };
 });
 
+ipcMain.handle('app:clear-link', clearLink);
 ipcMain.handle('app:start-worker', startWorker);
 ipcMain.handle('app:stop-worker', stopWorker);
+ipcMain.handle('app:set-api-url', setApiUrl);
+ipcMain.handle('app:set-power-profile', setPowerProfile);
 
 ipcMain.handle('app:set-close-to-tray', (_event, value: boolean) => {
   closeToTray = Boolean(value);
   void saveConfigSettings({ closeToTray });
+  send('app:settings', { closeToTray });
   updateTrayMenu();
   return { closeToTray };
 });
@@ -399,6 +548,7 @@ ipcMain.handle('app:open-external', (_event, url: string) => {
 });
 
 app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) return;
   configureAutoUpdates();
   const config = await loadOptionalConfig();
   closeToTray = config.closeToTray !== false;
@@ -410,6 +560,13 @@ app.whenReady().then(async () => {
       // The updater event handler publishes sanitized errors.
     });
   }, 2500);
+});
+
+app.on('second-instance', () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
 });
 
 app.on('window-all-closed', () => {

@@ -4,9 +4,9 @@ Aplicacion de escritorio para renderizar videos de SofLIA - Engine usando la com
 
 ## Version actual
 
-### v0.1.10
+### v0.1.11
 
-Version enfocada en mejorar instalacion, actualizaciones, experiencia de escritorio y visibilidad del render local.
+Version enfocada en mejorar instalacion, actualizaciones, experiencia de escritorio, builds de plantilla y visibilidad del render local.
 
 Incluye:
 
@@ -21,6 +21,7 @@ Incluye:
 - Reclamo automatico de jobs con `claim-next`.
 - Compatibilidad con cola secuencial: el worker procesa un video, termina, y despues reclama el siguiente.
 - Progreso visible del job actual: job, composicion, etapa y porcentaje.
+- Compatibilidad con jobs de build y preview de plantillas.
 - Render local con Remotion.
 - Subida del MP4 mediante URL firmada.
 - Actualizaciones automaticas con GitHub Releases y `latest/download`.
@@ -105,9 +106,9 @@ GitHub Actions genera instaladores desde:
 .github/workflows/desktop-installers.yml
 ```
 
-El workflow valida que el tag coincida con la version de `package.json`. Para esta publicacion la version esperada es `0.1.10`, por lo tanto el tag debe ser `v0.1.10`.
+El workflow valida que el tag coincida con la version de `package.json`. Para esta publicacion la version esperada es `0.1.11`, por lo tanto el tag debe ser `v0.1.11`.
 
-### Comandos para subir v0.1.10
+### Comandos para subir v0.1.11
 
 Revisar estado:
 
@@ -130,7 +131,7 @@ git add .
 Crear commit:
 
 ```powershell
-git commit -m "Release v0.1.10 desktop worker updates"
+git commit -m "Release v0.1.11 desktop worker updates"
 ```
 
 Subir rama actual:
@@ -142,13 +143,13 @@ git push origin HEAD
 Crear tag:
 
 ```powershell
-git tag v0.1.10
+git tag v0.1.11
 ```
 
 Subir tag:
 
 ```powershell
-git push origin v0.1.10
+git push origin v0.1.11
 ```
 
 Al subir un tag `v*`, el workflow crea un GitHub Release y adjunta instaladores para Windows, macOS y Linux.
@@ -163,7 +164,7 @@ https://github.com/DevOps-043/SofLIA-desktop_cli/releases/latest/download/SofLIA
 
 ## Firma y notarizacion macOS
 
-Por ahora el workflow no exige secrets de GitHub para macOS. Esto permite publicar la v0.1.10 sin bloquear el release.
+Por ahora el workflow no exige secrets de GitHub para macOS. Esto permite publicar la v0.1.11 sin bloquear el release.
 
 Cuando decidamos activar firma y notarizacion, necesitaremos configurar:
 

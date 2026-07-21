@@ -1,6 +1,7 @@
 import { sanitizeLog } from './logging.js';
 
-export interface ClaimedJob {
+export interface ClaimedRenderJob {
+  jobType?: 'render';
   jobId: string;
   compositionId: string;
   resolvedProps: Record<string, unknown>;
@@ -12,6 +13,41 @@ export interface ClaimedJob {
   outputStoragePath: string;
   timeoutInMilliseconds: number;
 }
+
+export interface ClaimedTemplateBuildJob {
+  jobType: 'template_build';
+  jobId: string;
+  buildId: string;
+  templateVersionId: string;
+  compositionId: string;
+  exportMode: 'component' | 'root';
+  bundleUrl: string;
+  bundleHash: string;
+  outputUploadUrl: string;
+  outputStoragePath: string;
+  timeoutInMilliseconds: number;
+}
+
+export interface ClaimedTemplatePreviewJob {
+  jobType: 'template_preview';
+  jobId: string;
+  previewId: string;
+  templateId: string;
+  templateVersionId: string;
+  buildId: string;
+  compositionId: string;
+  resolvedProps: Record<string, unknown>;
+  propsHash: string;
+  bundleUrl: string;
+  bundleHash: string;
+  bundleType: 'zip';
+  posterUploadUrl: string;
+  posterStoragePath: string;
+  previewFrame: number;
+  timeoutInMilliseconds: number;
+}
+
+export type ClaimedJob = ClaimedRenderJob | ClaimedTemplateBuildJob | ClaimedTemplatePreviewJob;
 
 export interface LinkedWorker {
   id: string;
@@ -33,6 +69,10 @@ export interface LinkWorkerInput {
   appVersion: string;
 }
 
+export interface WorkerHeartbeatOptions {
+  maxConcurrentJobs?: number;
+}
+
 export class SofliaWorkerApiClient {
   constructor(
     private readonly apiUrl: string,
@@ -43,12 +83,13 @@ export class SofliaWorkerApiClient {
     return this.post('/api/v1/production/remotion/workers/link', input, { auth: false });
   }
 
-  async heartbeat(status: 'ONLINE' | 'BUSY' | 'OFFLINE' = 'ONLINE') {
+  async heartbeat(status: 'ONLINE' | 'BUSY' | 'OFFLINE' = 'ONLINE', options: WorkerHeartbeatOptions = {}) {
     return this.post('/api/v1/production/remotion/workers/heartbeat', {
       status,
       platform: process.platform,
       arch: process.arch,
       appVersion: process.env.npm_package_version || 'dev',
+      maxConcurrentJobs: options.maxConcurrentJobs,
     });
   }
 
@@ -61,11 +102,18 @@ export class SofliaWorkerApiClient {
   }
 
   async claimNext(): Promise<ClaimedJob | null> {
-    const response = await this.post<{ job: ClaimedJob | null }>(
+    const jobs = await this.claimNextBatch();
+    return jobs[0] || null;
+  }
+
+  async claimNextBatch(): Promise<ClaimedJob[]> {
+    const response = await this.post<{ job: ClaimedJob | null; jobs?: ClaimedJob[] }>(
       '/api/v1/production/remotion/workers/jobs/claim-next',
       {},
     );
-    return response.job;
+    const jobs = response.jobs;
+    if (Array.isArray(jobs)) return jobs;
+    return response.job ? [response.job] : [];
   }
 
   async progress(jobId: string, percent: number, message: string, stage: string) {
@@ -79,7 +127,9 @@ export class SofliaWorkerApiClient {
   async complete(jobId: string, input: {
     outputStoragePath: string;
     checksum: string;
-    durationSeconds: number;
+    durationSeconds?: number;
+    buildHash?: string;
+    buildLog?: string;
   }) {
     return this.post(`/api/v1/production/remotion/workers/jobs/${encodeURIComponent(jobId)}/complete`, input);
   }

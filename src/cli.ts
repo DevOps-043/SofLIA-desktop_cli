@@ -81,7 +81,8 @@ async function runLink(flags: Record<string, string>) {
   });
 
   const authenticatedClient = new SofliaWorkerApiClient(apiUrl, result.workerToken);
-  await authenticatedClient.heartbeat('ONLINE');
+  const linkedConfig = await loadConfig();
+  await authenticatedClient.heartbeat('ONLINE', { maxConcurrentJobs: linkedConfig.maxConcurrentJobs });
 
   log(`Worker vinculado y configuracion guardada en ${getConfigPath()}`, {
     workerId: result.worker.id,
@@ -99,7 +100,7 @@ async function runDoctor() {
   await fsp.access(workspace);
 
   const client = new SofliaWorkerApiClient(config.apiUrl, config.token);
-  await client.heartbeat('ONLINE');
+  await client.heartbeat('ONLINE', { maxConcurrentJobs: config.maxConcurrentJobs });
 
   console.log('SofLIA - Engine Render Worker Doctor');
   console.log(`OK OS: ${process.platform} ${process.arch}`);
@@ -120,15 +121,18 @@ async function runRender(flags: Record<string, string>) {
   const client = new SofliaWorkerApiClient(config.apiUrl, config.token);
 
   try {
-    await client.heartbeat('BUSY');
+    await client.heartbeat('BUSY', { maxConcurrentJobs: config.maxConcurrentJobs });
     const job = await client.claim(jobId);
+    if (job.jobType === 'template_build' || job.jobType === 'template_preview') {
+      throw new Error('El comando render solo acepta jobs de render. Usa start para procesar builds y previews de plantilla.');
+    }
     log('Job reclamado', {
       jobId: job.jobId,
       compositionId: job.compositionId,
       bundleHash: job.bundleHash,
       propsHash: job.propsHash,
     });
-    await renderClaimedJob(client, job);
+    await renderClaimedJob(client, job, { renderConcurrency: config.renderConcurrency });
     log('Render completado', { jobId });
   } catch (error) {
     const message = sanitizeLog(error instanceof Error ? error.message : String(error));
