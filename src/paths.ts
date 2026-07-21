@@ -1,5 +1,6 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
+import * as fs from 'node:fs';
 
 const APP_DIR_NAME = 'SofLIA Engine Render Worker';
 
@@ -27,4 +28,21 @@ export function getConfigPath(): string {
 
 export function getWorkspaceDir(): string {
   return path.join(getAppDataDir(), 'workspace');
+}
+
+export function getRemotionCacheDir(): string {
+  return path.join(getWorkspaceDir(), 'remotion-cache');
+}
+
+export function configureWritableWorkingDirectory(): string {
+  const workspaceDir = getWorkspaceDir();
+  try {
+    // Remotion derives its browser download cache from process.cwd().
+    // Installed Windows apps run from Program Files, which is not writable.
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    process.chdir(workspaceDir);
+  } catch {
+    // Let the later render/config operation surface the concrete filesystem error.
+  }
+  return workspaceDir;
 }

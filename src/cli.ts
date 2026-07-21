@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import { SofliaWorkerApiClient } from './api-client.js';
 import { loadConfig, saveConfig } from './config.js';
 import { log, logError, sanitizeLog } from './logging.js';
-import { getConfigPath, getWorkspaceDir } from './paths.js';
+import { configureWritableWorkingDirectory, getConfigPath, getWorkspaceDir } from './paths.js';
 import { renderClaimedJob } from './render.js';
 import { startWorkerLoop } from './worker-loop.js';
 
@@ -47,6 +47,8 @@ function normalizeApiUrl(apiUrl: string): string {
 function getAppVersion(): string {
   return process.env.npm_package_version || 'dev';
 }
+
+configureWritableWorkingDirectory();
 
 async function runConfigure(flags: Record<string, string>) {
   if (!flags['api-url'] || !flags.token) {

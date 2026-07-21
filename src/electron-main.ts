@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { SofliaWorkerApiClient } from './api-client.js';
 import { clearWorkerLink, loadConfig, loadOptionalConfig, saveConfig, saveConfigSettings } from './config.js';
 import { sanitizeLog } from './logging.js';
-import { getAppDataDir, getConfigPath } from './paths.js';
+import { configureWritableWorkingDirectory, getAppDataDir, getConfigPath } from './paths.js';
 import { DEFAULT_WORKER_POWER_PROFILE, getWorkerPowerProfile } from './shared/worker-capacity.js';
 import type { AppUpdateState } from './shared/update-types.js';
 import { getWorkerStartMessage, getWorkerStatusMessage } from './worker-link-state.js';
@@ -30,6 +30,7 @@ function configureChromiumStoragePaths(): void {
 }
 
 configureChromiumStoragePaths();
+configureWritableWorkingDirectory();
 
 if (process.platform === 'win32') {
   app.setAppUserModelId('com.soflia.engine.render-worker');

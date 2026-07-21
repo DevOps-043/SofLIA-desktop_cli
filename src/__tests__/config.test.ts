@@ -4,8 +4,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { loadConfig, saveConfig, saveConfigSettings } from '../config.js';
+import { configureWritableWorkingDirectory, getWorkspaceDir } from '../paths.js';
 
 const originalAppData = process.env.APPDATA;
+const originalCwd = process.cwd();
 let tempRoot = '';
 
 beforeEach(async () => {
@@ -19,6 +21,7 @@ afterEach(async () => {
   } else {
     process.env.APPDATA = originalAppData;
   }
+  process.chdir(originalCwd);
   await fsp.rm(tempRoot, { recursive: true, force: true });
 });
 
@@ -37,5 +40,15 @@ describe('worker config', () => {
     assert.equal(config.powerProfile, 'high');
     assert.equal(config.maxConcurrentJobs, 4);
     assert.equal(config.renderConcurrency, 4);
+  });
+
+  it('moves the process cwd to the user workspace for Remotion browser cache writes', async () => {
+    const workspace = getWorkspaceDir();
+
+    const configuredWorkspace = configureWritableWorkingDirectory();
+
+    assert.equal(configuredWorkspace, workspace);
+    assert.equal(process.cwd(), workspace);
+    await fsp.access(workspace);
   });
 });
