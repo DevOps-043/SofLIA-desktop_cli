@@ -153,7 +153,7 @@ function configureAutoUpdates(): void {
       status: 'downloaded',
       version: info.version,
       percent: 100,
-      message: 'Actualizacion lista. Reinicia para terminar la instalacion.',
+      message: 'Actualizacion lista. Instala y reinicia para terminar.',
     });
   });
 
@@ -184,8 +184,8 @@ async function installDownloadedUpdate(): Promise<AppUpdateState> {
   if (updateState.status !== 'downloaded') return updateState;
   isQuitting = true;
   await stopWorker();
-  autoUpdater.quitAndInstall(false, true);
-  return publishUpdateState({ status: 'downloaded', message: 'Reiniciando para instalar.' });
+  autoUpdater.quitAndInstall(true, true);
+  return publishUpdateState({ status: 'downloaded', message: 'Instalando actualizacion y reiniciando.' });
 }
 
 function createTray(): void {

@@ -237,7 +237,7 @@ function getUpdateMessage(updateState: AppUpdateState): string {
   if (updateState.message) return updateState.message;
   if (updateState.status === 'idle') return 'La app buscara nuevas versiones publicadas en GitHub Releases.';
   if (updateState.status === 'available') return `La version ${updateState.version} esta disponible.`;
-  if (updateState.status === 'downloaded') return 'Actualizacion lista. Reinicia para terminar la instalacion.';
+  if (updateState.status === 'downloaded') return 'Actualizacion lista. Instala y reinicia para terminar.';
   return 'Ya tienes la version mas reciente.';
 }
 
@@ -747,7 +747,7 @@ function App() {
                     <button className="primary" disabled={busyAction === 'install-update'} onClick={() => runAction('install-update', async () => {
                       await window.sofliaWorker.installUpdate();
                     })}>
-                      Reiniciar
+                      Instalar y reiniciar
                     </button>
                   ) : null}
                 </div>
