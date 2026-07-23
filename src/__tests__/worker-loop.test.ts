@@ -82,6 +82,7 @@ describe('startWorkerLoop', () => {
           claimNext: async () => job,
           fail: async () => ({}),
         }),
+        createLocalJobStore: async () => null,
         renderJob: async (_client, claimedJob, options) => {
           renderConcurrency = options?.renderConcurrency;
           options?.onProgress?.({
@@ -124,6 +125,7 @@ describe('startWorkerLoop', () => {
           claimNext: async () => jobs[claimIndex++] || null,
           fail: async () => ({}),
         }),
+        createLocalJobStore: async () => null,
         renderJob: async (_client, claimedJob) => {
           renderOrder.push(claimedJob.jobId);
         },
@@ -157,6 +159,7 @@ describe('startWorkerLoop', () => {
           claimNext: async () => job,
           fail: async () => ({}),
         }),
+        createLocalJobStore: async () => null,
         renderJob: async (_client, claimedJob) => {
           renderedJobs.push(claimedJob.jobId);
         },
@@ -191,6 +194,7 @@ describe('startWorkerLoop', () => {
           claimNext: async () => job,
           fail: async () => ({}),
         }),
+        createLocalJobStore: async () => null,
         renderJob: async (_client, claimedJob) => {
           renderedJobs.push(claimedJob.jobId);
         },
@@ -243,6 +247,7 @@ describe('startWorkerLoop', () => {
           claimNextBatch: async () => jobs,
           fail: async () => ({}),
         }),
+        createLocalJobStore: async () => null,
         renderJob: async () => {},
         buildTemplate: async () => {},
         renderTemplatePreview: async (_client, claimedJob) => {

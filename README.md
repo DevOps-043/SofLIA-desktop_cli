@@ -4,9 +4,9 @@ Aplicacion de escritorio para renderizar videos de SofLIA - Engine usando la com
 
 ## Version actual
 
-### v0.1.13
+### v0.2.0
 
-Version enfocada en mejorar instalacion, actualizaciones silenciosas, experiencia de escritorio, builds de plantilla, visibilidad del render local y cache escribible de Remotion en equipos instalados.
+Version enfocada en recuperacion local de jobs, retencion configurable, reintentos seguros de subida/confirmacion, builds de plantilla, previews, experiencia de escritorio, actualizaciones silenciosas y cache escribible de Remotion en equipos instalados.
 
 Incluye:
 
@@ -23,6 +23,10 @@ Incluye:
 - Progreso visible del job actual: job, composicion, etapa y porcentaje.
 - Compatibilidad con jobs de build y preview de plantillas.
 - Cache de Remotion/Chrome en la carpeta de datos del usuario para evitar errores de permisos en `Program Files`.
+- Recuperacion local de renders, builds y previews cuando ya existe un artefacto final en disco.
+- Reintentos seguros de `upload` y `complete` sin renderizar otra vez cuando el artefacto final ya esta listo.
+- Politica local de retencion configurable: borrar al confirmar o conservar copia local.
+- Resumen local de recuperacion y limpieza en la app.
 - Instalacion silenciosa al reiniciar desde la actualizacion descargada, sin abrir el asistente NSIS.
 - Render local con Remotion.
 - Subida del MP4 mediante URL firmada.
@@ -37,9 +41,23 @@ Incluye:
 Limitaciones actuales:
 
 - La app muestra el progreso del job actual, pero no puede mostrar el total de videos en cola hasta que el backend entregue `queueTotal` o `queuePosition`.
-- No incluye modo offline.
+- No incluye render completamente offline: requiere conexion para reclamar jobs, subir artefactos y confirmar resultados.
 - La revocacion del worker todavia debe hacerse desde SofLIA - Engine.
 - Los instaladores macOS aun no estan firmados ni notarizados, por lo que Gatekeeper puede bloquearlos.
+
+## Recuperacion local y retencion
+
+La app mantiene una base local SQLite en `workspace/state/worker-state.db`. Esta base no guarda videos ni ZIPs pesados; solo registra estado, rutas locales, checksums, intentos y politica de limpieza.
+
+El worker puede recuperar estos casos:
+
+- El render/build/preview genero el artefacto final local, pero fallo la subida.
+- La subida termino, pero fallo la llamada `complete` que confirma el resultado en SofLIA.
+- La app o el equipo se reinicio despues de generar un artefacto final.
+
+En la version actual, si el equipo se apaga mientras Remotion esta creando parcialmente el MP4 con `renderMedia`, ese render se reinicia desde cero. La continuacion por frames/chunks queda como fase posterior.
+
+La politica local por defecto es `delete_on_remote_confirm`: cuando SofLIA confirma el job en Supabase, el worker borra el artefacto final local y conserva solo evidencia minima. Desde configuracion se puede cambiar a `keep_all` para conservar copias locales.
 
 ## Uso para usuarios finales
 
@@ -108,9 +126,9 @@ GitHub Actions genera instaladores desde:
 .github/workflows/desktop-installers.yml
 ```
 
-El workflow valida que el tag coincida con la version de `package.json`. Para esta publicacion la version esperada es `0.1.13`, por lo tanto el tag debe ser `v0.1.13`.
+El workflow valida que el tag coincida con la version de `package.json`. Para esta publicacion la version esperada es `0.2.0`, por lo tanto el tag debe ser `v0.2.0`.
 
-### Comandos para subir v0.1.13
+### Comandos para subir v0.2.0
 
 Revisar estado:
 
@@ -133,7 +151,7 @@ git add .
 Crear commit:
 
 ```powershell
-git commit -m "Release v0.1.13 silent updater install"
+git commit -m "Release v0.2.0 local recovery"
 ```
 
 Subir rama actual:
@@ -145,13 +163,13 @@ git push origin HEAD
 Crear tag:
 
 ```powershell
-git tag v0.1.13
+git tag v0.2.0
 ```
 
 Subir tag:
 
 ```powershell
-git push origin v0.1.13
+git push origin v0.2.0
 ```
 
 Al subir un tag `v*`, el workflow crea un GitHub Release y adjunta instaladores para Windows, macOS y Linux.
@@ -166,7 +184,7 @@ https://github.com/DevOps-043/SofLIA-desktop_cli/releases/latest/download/SofLIA
 
 ## Firma y notarizacion macOS
 
-Por ahora el workflow no exige secrets de GitHub para macOS. Esto permite publicar la v0.1.13 sin bloquear el release.
+Por ahora el workflow no exige secrets de GitHub para macOS. Esto permite publicar la v0.2.0 sin bloquear el release.
 
 Cuando decidamos activar firma y notarizacion, necesitaremos configurar:
 

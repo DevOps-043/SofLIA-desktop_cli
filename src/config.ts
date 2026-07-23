@@ -1,6 +1,8 @@
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import { getConfigPath } from './paths.js';
+import { normalizeLocalRetentionPolicy } from './local-job-state.js';
+import type { LocalCleanupPolicy } from './local-job-state.js';
 import { DEFAULT_WORKER_POWER_PROFILE, getWorkerPowerProfile } from './shared/worker-capacity.js';
 import type { WorkerPowerProfile } from './shared/worker-capacity.js';
 
@@ -11,6 +13,7 @@ export interface WorkerConfig {
   powerProfile?: WorkerPowerProfile;
   maxConcurrentJobs?: number;
   renderConcurrency?: number;
+  localRetentionPolicy?: LocalCleanupPolicy;
 }
 
 export async function loadOptionalConfig(): Promise<Partial<WorkerConfig>> {
@@ -30,7 +33,7 @@ export async function saveConfig(config: WorkerConfig): Promise<void> {
   await fsp.writeFile(configPath, `${JSON.stringify({ ...current, ...config }, null, 2)}\n`, { mode: 0o600 });
 }
 
-export async function saveConfigSettings(settings: Partial<Pick<WorkerConfig, 'apiUrl' | 'closeToTray' | 'powerProfile'>>): Promise<void> {
+export async function saveConfigSettings(settings: Partial<Pick<WorkerConfig, 'apiUrl' | 'closeToTray' | 'powerProfile' | 'localRetentionPolicy'>>): Promise<void> {
   const configPath = getConfigPath();
   const current = await loadOptionalConfig();
   await fsp.mkdir(path.dirname(configPath), { recursive: true });
@@ -59,5 +62,6 @@ export async function loadConfig(): Promise<WorkerConfig> {
     powerProfile: powerProfile.id,
     maxConcurrentJobs: powerProfile.maxConcurrentJobs,
     renderConcurrency: powerProfile.renderConcurrency,
+    localRetentionPolicy: normalizeLocalRetentionPolicy(parsed.localRetentionPolicy),
   };
 }

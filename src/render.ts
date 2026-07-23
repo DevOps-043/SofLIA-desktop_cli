@@ -3,13 +3,18 @@ import * as path from 'node:path';
 import { ensureBrowser, renderMedia, selectComposition } from '@remotion/renderer';
 import type { ClaimedRenderJob, SofliaWorkerApiClient } from './api-client.js';
 import { downloadAndExtractBundle, sha256File } from './bundle.js';
+import type { LocalCleanupPolicy } from './local-job-state.js';
+import type { LocalJobStore } from './local-job-store.js';
 import { getWorkspaceDir } from './paths.js';
+import { RecoverableJobError } from './recoverable-job-error.js';
 import { getRemotionBinariesDirectory } from './remotion-binaries.js';
 import type { RenderProgressEvent } from './shared/worker-events.js';
 
 type RenderClaimedJobOptions = {
   onProgress?: (event: RenderProgressEvent) => void;
   renderConcurrency?: number;
+  localJobStore?: LocalJobStore;
+  localRetentionPolicy?: LocalCleanupPolicy;
 };
 
 async function reportProgress(
@@ -52,6 +57,7 @@ export async function renderClaimedJob(
   const outputPath = path.join(outputDir, 'output.mp4');
 
   await fsp.mkdir(outputDir, { recursive: true });
+  options.localJobStore?.updateStage(job.jobId, 'running', 'render_workspace_ready');
   await ensureBrowser();
 
   await reportProgress(client, job, 25, 'Resolviendo composicion', 'composition_select', options.onProgress);
@@ -89,20 +95,44 @@ export async function renderClaimedJob(
     },
   });
 
+  const checksum = await sha256File(outputPath);
+  const stat = await fsp.stat(outputPath);
+  options.localJobStore?.markArtifactReady({
+    jobId: job.jobId,
+    artifactPath: outputPath,
+    artifactChecksum: checksum,
+    artifactSizeBytes: stat.size,
+    durationSeconds: Math.round(composition.durationInFrames / composition.fps),
+    outputStoragePath: job.outputStoragePath,
+  });
+
   await reportProgress(client, job, 90, 'Subiendo video final', 'upload', options.onProgress);
   const video = await fsp.readFile(outputPath);
-  const uploadResponse = await fetch(job.outputUploadUrl, {
-    method: 'PUT',
-    headers: { 'content-type': 'video/mp4' },
-    body: video,
-  });
-  if (!uploadResponse.ok) {
-    throw new Error(`No se pudo subir el video final: HTTP ${uploadResponse.status}`);
+  try {
+    options.localJobStore?.updateStage(job.jobId, 'uploading', 'upload');
+    const uploadResponse = await fetch(job.outputUploadUrl, {
+      method: 'PUT',
+      headers: { 'content-type': 'video/mp4' },
+      body: video,
+    });
+    if (!uploadResponse.ok) {
+      throw new Error(`No se pudo subir el video final: HTTP ${uploadResponse.status}`);
+    }
+    options.localJobStore?.markUploadedPendingComplete(job.jobId);
+  } catch (error) {
+    options.localJobStore?.markUploadFailed(job.jobId, error);
+    throw new RecoverableJobError('Video final listo localmente, pero la subida quedo pendiente.', 'upload', error);
   }
 
-  await client.complete(job.jobId, {
-    outputStoragePath: job.outputStoragePath,
-    checksum: await sha256File(outputPath),
-    durationSeconds: Math.round(composition.durationInFrames / composition.fps),
-  });
+  try {
+    await client.complete(job.jobId, {
+      outputStoragePath: job.outputStoragePath,
+      checksum,
+      durationSeconds: Math.round(composition.durationInFrames / composition.fps),
+    });
+    options.localJobStore?.markRemoteConfirmed(job.jobId);
+  } catch (error) {
+    options.localJobStore?.markConfirmFailed(job.jobId, error);
+    throw new RecoverableJobError('Video final subido, pero la confirmacion remota quedo pendiente.', 'complete', error);
+  }
 }

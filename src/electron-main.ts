@@ -6,6 +6,8 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SofliaWorkerApiClient } from './api-client.js';
 import { clearWorkerLink, loadConfig, loadOptionalConfig, saveConfig, saveConfigSettings } from './config.js';
+import { normalizeLocalRetentionPolicy } from './local-job-state.js';
+import { LocalJobStore } from './local-job-store.js';
 import { sanitizeLog } from './logging.js';
 import { configureWritableWorkingDirectory, getAppDataDir, getConfigPath } from './paths.js';
 import { DEFAULT_WORKER_POWER_PROFILE, getWorkerPowerProfile } from './shared/worker-capacity.js';
@@ -303,6 +305,7 @@ function createWindow(): void {
 async function getStatus() {
   try {
     const config = await loadConfig();
+    const localRecovery = await readLocalRecoverySummary();
     closeToTray = config.closeToTray !== false;
     const client = new SofliaWorkerApiClient(config.apiUrl, config.token);
     const heartbeat = await client.heartbeat(workerAbortController ? 'BUSY' : 'OFFLINE', {
@@ -317,11 +320,14 @@ async function getStatus() {
       powerProfile: config.powerProfile,
       maxConcurrentJobs: config.maxConcurrentJobs,
       renderConcurrency: config.renderConcurrency,
+      localRetentionPolicy: config.localRetentionPolicy,
+      localRecovery,
       worker: heartbeat.worker || heartbeat,
     };
   } catch (error) {
     const config = await loadOptionalConfig();
     const powerProfile = getWorkerPowerProfile(config.powerProfile || DEFAULT_WORKER_POWER_PROFILE);
+    const localRecovery = await readLocalRecoverySummary();
     closeToTray = config.closeToTray !== false;
     return {
       configured: false,
@@ -332,8 +338,22 @@ async function getStatus() {
       powerProfile: powerProfile.id,
       maxConcurrentJobs: powerProfile.maxConcurrentJobs,
       renderConcurrency: powerProfile.renderConcurrency,
+      localRetentionPolicy: normalizeLocalRetentionPolicy(config.localRetentionPolicy),
+      localRecovery,
       message: getWorkerStatusMessage(error),
     };
+  }
+}
+
+async function readLocalRecoverySummary() {
+  const store = new LocalJobStore();
+  try {
+    await store.initialize();
+    return store.getRecoverySummary();
+  } catch {
+    return { pendingUploads: 0, pendingCompletes: 0, pendingCleanup: 0, retainedBytes: 0 };
+  } finally {
+    store.close();
   }
 }
 
@@ -525,6 +545,18 @@ ipcMain.handle('app:start-worker', startWorker);
 ipcMain.handle('app:stop-worker', stopWorker);
 ipcMain.handle('app:set-api-url', setApiUrl);
 ipcMain.handle('app:set-power-profile', setPowerProfile);
+
+ipcMain.handle('app:set-local-retention-policy', async (_event, rawPolicy: string) => {
+  const localRetentionPolicy = normalizeLocalRetentionPolicy(rawPolicy);
+  await saveConfigSettings({ localRetentionPolicy });
+  send('app:settings', { localRetentionPolicy });
+  return {
+    localRetentionPolicy,
+    message: localRetentionPolicy === 'keep_all'
+      ? 'La app conservara copias locales despues de confirmar en SofLIA.'
+      : 'La app borrara artefactos locales despues de confirmar en SofLIA.',
+  };
+});
 
 ipcMain.handle('app:set-close-to-tray', (_event, value: boolean) => {
   closeToTray = Boolean(value);

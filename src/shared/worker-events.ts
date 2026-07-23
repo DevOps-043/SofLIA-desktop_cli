@@ -5,6 +5,11 @@ export type WorkerRuntimeState =
   | 'claiming'
   | 'rendering'
   | 'completed'
+  | 'recovering'
+  | 'upload_pending'
+  | 'confirm_pending'
+  | 'cleanup_completed'
+  | 'cleanup_skipped'
   | 'error'
   | 'stopped';
 

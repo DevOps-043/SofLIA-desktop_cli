@@ -7,6 +7,8 @@ import type { WorkerPowerProfile } from '../shared/worker-capacity';
 import type { WorkerRuntimeEvent } from '../shared/worker-events';
 import './styles.css';
 
+type LocalRetentionPolicy = 'delete_on_remote_confirm' | 'keep_all';
+
 type WorkerStatus = {
   configured: boolean;
   apiUrl?: string;
@@ -16,6 +18,13 @@ type WorkerStatus = {
   powerProfile?: WorkerPowerProfile;
   maxConcurrentJobs?: number;
   renderConcurrency?: number;
+  localRetentionPolicy?: LocalRetentionPolicy;
+  localRecovery?: {
+    pendingUploads: number;
+    pendingCompletes: number;
+    pendingCleanup: number;
+    retainedBytes: number;
+  };
   message?: string;
   worker?: {
     status?: string;
@@ -57,6 +66,10 @@ declare global {
         restarted: boolean;
         message?: string;
       }>;
+      setLocalRetentionPolicy: (policy: LocalRetentionPolicy) => Promise<{
+        localRetentionPolicy: LocalRetentionPolicy;
+        message?: string;
+      }>;
       setCloseToTray: (value: boolean) => Promise<{ closeToTray: boolean }>;
       setTheme: (theme: 'light' | 'dark') => Promise<{ theme: 'light' | 'dark' }>;
       getUpdateStatus: () => Promise<AppUpdateState>;
@@ -71,6 +84,7 @@ declare global {
         powerProfile?: WorkerPowerProfile;
         maxConcurrentJobs?: number;
         renderConcurrency?: number;
+        localRetentionPolicy?: LocalRetentionPolicy;
       }) => void) => () => void;
       onWorkerEvent: (callback: (event: WorkerRuntimeEvent) => void) => () => void;
     };
@@ -153,6 +167,11 @@ function getFriendlyWorkerEvent(event: WorkerRuntimeEvent): Pick<LogLine, 'messa
   if (event.state === 'rendering') {
     return { message: `${event.message} (${event.percent ?? 0}%).`, tone: 'busy', scope, detail };
   }
+  if (event.state === 'recovering') return { message: event.message || 'Recuperando job local pendiente.', tone: 'busy', scope, detail };
+  if (event.state === 'upload_pending') return { message: event.message || 'Artefacto local pendiente de subir.', tone: 'warn', scope, detail };
+  if (event.state === 'confirm_pending') return { message: event.message || 'Artefacto pendiente de confirmar en SofLIA.', tone: 'warn', scope, detail };
+  if (event.state === 'cleanup_completed') return { message: event.message || 'Artefacto local eliminado.', tone: 'ok', scope, detail };
+  if (event.state === 'cleanup_skipped') return { message: event.message || 'Artefacto local conservado.', tone: 'info', scope, detail };
   if (event.state === 'completed') {
     return {
       message: scope === 'bundle'
@@ -165,6 +184,13 @@ function getFriendlyWorkerEvent(event: WorkerRuntimeEvent): Pick<LogLine, 'messa
   }
   if (event.state === 'error') return { message: event.message || 'No se pudo completar el job.', tone: 'bad', scope, detail };
   return { message: 'Render local detenido.', tone: 'warn', scope, detail };
+}
+
+function formatBytes(value = 0): string {
+  if (value >= 1024 * 1024 * 1024) return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${value} B`;
 }
 
 function mergeWorkerEvent(current: WorkerRuntimeEvent | null, event: WorkerRuntimeEvent): WorkerRuntimeEvent {
@@ -313,6 +339,7 @@ function App() {
         powerProfile: payload.powerProfile ?? current.powerProfile,
         maxConcurrentJobs: payload.maxConcurrentJobs ?? current.maxConcurrentJobs,
         renderConcurrency: payload.renderConcurrency ?? current.renderConcurrency,
+        localRetentionPolicy: payload.localRetentionPolicy ?? current.localRetentionPolicy,
       }));
     });
     const removeUpdateListener = window.sofliaWorker.onUpdateStatus((payload) => {
@@ -387,6 +414,14 @@ function App() {
       }));
       addLog(result.message || `Perfil ${getWorkerPowerProfile(profile).label} guardado.`, result.restarted ? 'ok' : 'info');
     }, { refresh: false, errorTarget: 'options' });
+  }
+
+  async function saveLocalRetentionPolicy(policy: LocalRetentionPolicy) {
+    await runAction(`retention-${policy}`, async () => {
+      const result = await window.sofliaWorker.setLocalRetentionPolicy(policy);
+      setStatus((current) => ({ ...current, localRetentionPolicy: result.localRetentionPolicy }));
+      addLog(result.message || 'Politica de retencion local guardada.', 'ok');
+    });
   }
 
   return (
@@ -699,6 +734,28 @@ function App() {
                     setStatus((current) => ({ ...current, closeToTray: result.closeToTray }));
                   })} />
                 </label>
+                <div className="setting-row">
+                  <span>
+                    <strong>Retencion local</strong>
+                    <small>Artefactos finales despues de confirmar en SofLIA.</small>
+                  </span>
+                  <div className="segmented-control" aria-label="Politica de retencion local">
+                    <button
+                      className={(status.localRetentionPolicy || 'delete_on_remote_confirm') === 'delete_on_remote_confirm' ? 'is-active' : ''}
+                      disabled={busyAction === 'retention-delete_on_remote_confirm'}
+                      onClick={() => saveLocalRetentionPolicy('delete_on_remote_confirm')}
+                    >
+                      Borrar
+                    </button>
+                    <button
+                      className={status.localRetentionPolicy === 'keep_all' ? 'is-active' : ''}
+                      disabled={busyAction === 'retention-keep_all'}
+                      onClick={() => saveLocalRetentionPolicy('keep_all')}
+                    >
+                      Guardar
+                    </button>
+                  </div>
+                </div>
               </section>
             </section>
 
@@ -759,6 +816,24 @@ function App() {
                   <div>
                     <h2>Mantenimiento</h2>
                     <p>Acciones locales para cerrar o desvincular este equipo.</p>
+                  </div>
+                </div>
+                <div className="job-meta-grid">
+                  <div>
+                    <span>Subidas pendientes</span>
+                    <strong>{status.localRecovery?.pendingUploads ?? 0}</strong>
+                  </div>
+                  <div>
+                    <span>Confirmaciones</span>
+                    <strong>{status.localRecovery?.pendingCompletes ?? 0}</strong>
+                  </div>
+                  <div>
+                    <span>Limpieza</span>
+                    <strong>{status.localRecovery?.pendingCleanup ?? 0}</strong>
+                  </div>
+                  <div>
+                    <span>Retenido</span>
+                    <strong>{formatBytes(status.localRecovery?.retainedBytes || 0)}</strong>
                   </div>
                 </div>
                 <div className="maintenance-actions">

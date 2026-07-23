@@ -97,6 +97,63 @@ describe('SofliaWorkerApiClient', () => {
     assert.equal(requestBody?.maxConcurrentJobs, 4);
   });
 
+  it('sends local recovery summary in heartbeat payloads', async () => {
+    let requestBody: any = null;
+
+    globalThis.fetch = (async (_url, init) => {
+      requestBody = JSON.parse(String(init?.body || '{}')) as Record<string, unknown>;
+      return new Response(JSON.stringify({ worker: { id: 'worker-1' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const client = new SofliaWorkerApiClient('http://localhost:4000', 'swk_secret');
+    await client.heartbeat('ONLINE', {
+      maxConcurrentJobs: 4,
+      localRecovery: {
+        pendingUploads: 1,
+        pendingCompletes: 2,
+        pendingCleanup: 3,
+        retainedBytes: 4096,
+      },
+    });
+
+    assert.equal(requestBody?.localRecovery?.pendingUploads, 1);
+    assert.equal(requestBody?.localRecovery?.retainedBytes, 4096);
+  });
+
+  it('refreshes upload URLs for recoverable jobs', async () => {
+    let requestUrl = '';
+    let requestHeaders: HeadersInit | undefined;
+    let requestBody: any = null;
+
+    globalThis.fetch = (async (url, init) => {
+      requestUrl = String(url);
+      requestHeaders = init?.headers;
+      requestBody = JSON.parse(String(init?.body || '{}')) as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        uploadUrl: 'https://example.test/upload/retry',
+        outputStoragePath: 'completed/job-1.mp4',
+        expiresInSeconds: 3600,
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const client = new SofliaWorkerApiClient('http://localhost:4000', 'swk_secret');
+    const result = await client.refreshUploadUrl('job-1', {
+      jobType: 'render',
+      outputStoragePath: 'completed/job-1.mp4',
+    });
+
+    assert.equal(requestUrl, 'http://localhost:4000/api/v1/production/remotion/workers/jobs/job-1/refresh-upload-url');
+    assert.equal((requestHeaders as Record<string, string>).authorization, 'Bearer swk_secret');
+    assert.equal(requestBody?.jobType, 'render');
+    assert.equal(result.uploadUrl, 'https://example.test/upload/retry');
+  });
+
   it('claims template build jobs returned by the control plane', async () => {
     globalThis.fetch = (async () => {
       return new Response(JSON.stringify({

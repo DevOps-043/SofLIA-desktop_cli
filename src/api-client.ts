@@ -71,6 +71,23 @@ export interface LinkWorkerInput {
 
 export interface WorkerHeartbeatOptions {
   maxConcurrentJobs?: number;
+  localRecovery?: {
+    pendingUploads: number;
+    pendingCompletes: number;
+    pendingCleanup: number;
+    retainedBytes: number;
+    jobs?: Array<{
+      jobId: string;
+      jobType: 'render' | 'template_build' | 'template_preview';
+      remoteTable: string;
+      localState: string;
+      artifactReady: boolean;
+      artifactChecksum?: string;
+      artifactSizeBytes?: number;
+      cleanupPolicy?: string;
+      cleanupStatus?: string;
+    }>;
+  };
 }
 
 export class SofliaWorkerApiClient {
@@ -90,6 +107,7 @@ export class SofliaWorkerApiClient {
       arch: process.arch,
       appVersion: process.env.npm_package_version || 'dev',
       maxConcurrentJobs: options.maxConcurrentJobs,
+      localRecovery: options.localRecovery,
     });
   }
 
@@ -132,6 +150,17 @@ export class SofliaWorkerApiClient {
     buildLog?: string;
   }) {
     return this.post(`/api/v1/production/remotion/workers/jobs/${encodeURIComponent(jobId)}/complete`, input);
+  }
+
+  async refreshUploadUrl(jobId: string, input: {
+    jobType: 'render' | 'template_build' | 'template_preview';
+    outputStoragePath: string;
+  }): Promise<{ uploadUrl: string; outputStoragePath: string; expiresInSeconds?: number }> {
+    return this.post(`/api/v1/production/remotion/workers/jobs/${encodeURIComponent(jobId)}/refresh-upload-url`, input);
+  }
+
+  async recoverableJobs(): Promise<{ jobs: Array<Record<string, unknown>> }> {
+    return this.post('/api/v1/production/remotion/workers/jobs/recoverable', {});
   }
 
   async fail(jobId: string, input: {

@@ -3,13 +3,18 @@ import * as path from 'node:path';
 import { ensureBrowser, renderStill, selectComposition } from '@remotion/renderer';
 import type { ClaimedTemplatePreviewJob, SofliaWorkerApiClient } from './api-client.js';
 import { downloadAndExtractBundle, sha256File } from './bundle.js';
+import type { LocalCleanupPolicy } from './local-job-state.js';
+import type { LocalJobStore } from './local-job-store.js';
 import { sanitizeLog } from './logging.js';
 import { getWorkspaceDir } from './paths.js';
 import { getRemotionBinariesDirectory } from './remotion-binaries.js';
+import { RecoverableJobError } from './recoverable-job-error.js';
 import type { RenderProgressEvent } from './shared/worker-events.js';
 
 type RenderTemplatePreviewJobOptions = {
   onProgress?: (event: RenderProgressEvent) => void;
+  localJobStore?: LocalJobStore;
+  localRetentionPolicy?: LocalCleanupPolicy;
 };
 
 async function reportProgress(
@@ -92,24 +97,47 @@ export async function renderTemplatePreviewJob(
     binariesDirectory,
   });
 
+  const checksum = await sha256File(outputPath);
+  const stat = await fsp.stat(outputPath);
+  options.localJobStore?.markArtifactReady({
+    jobId: job.jobId,
+    artifactPath: outputPath,
+    artifactChecksum: checksum,
+    artifactSizeBytes: stat.size,
+    outputStoragePath: job.posterStoragePath,
+  });
+
   await reportProgress(client, job, 88, 'Subiendo poster de preview', 'template_preview_upload', options.onProgress, {
     posterStoragePath: job.posterStoragePath,
   });
   const poster = await fsp.readFile(outputPath);
-  const uploadResponse = await fetch(job.posterUploadUrl, {
-    method: 'PUT',
-    headers: { 'content-type': 'image/png' },
-    body: new Blob([new Uint8Array(poster)], { type: 'image/png' }),
-  });
-  if (!uploadResponse.ok) {
-    const detail = await readSafeUploadFailureDetail(uploadResponse);
-    throw new Error(
-      `No se pudo subir el poster de preview: HTTP ${uploadResponse.status}${detail ? ` - ${detail}` : ''}`,
-    );
+  try {
+    options.localJobStore?.updateStage(job.jobId, 'uploading', 'template_preview_upload');
+    const uploadResponse = await fetch(job.posterUploadUrl, {
+      method: 'PUT',
+      headers: { 'content-type': 'image/png' },
+      body: new Blob([new Uint8Array(poster)], { type: 'image/png' }),
+    });
+    if (!uploadResponse.ok) {
+      const detail = await readSafeUploadFailureDetail(uploadResponse);
+      throw new Error(
+        `No se pudo subir el poster de preview: HTTP ${uploadResponse.status}${detail ? ` - ${detail}` : ''}`,
+      );
+    }
+    options.localJobStore?.markUploadedPendingComplete(job.jobId);
+  } catch (error) {
+    options.localJobStore?.markUploadFailed(job.jobId, error);
+    throw new RecoverableJobError('Poster de preview listo localmente, pero la subida quedo pendiente.', 'upload', error);
   }
 
-  await client.complete(job.jobId, {
-    outputStoragePath: job.posterStoragePath,
-    checksum: await sha256File(outputPath),
-  });
+  try {
+    await client.complete(job.jobId, {
+      outputStoragePath: job.posterStoragePath,
+      checksum,
+    });
+    options.localJobStore?.markRemoteConfirmed(job.jobId);
+  } catch (error) {
+    options.localJobStore?.markConfirmFailed(job.jobId, error);
+    throw new RecoverableJobError('Poster de preview subido, pero la confirmacion remota quedo pendiente.', 'complete', error);
+  }
 }

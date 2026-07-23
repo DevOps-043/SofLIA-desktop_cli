@@ -1,7 +1,11 @@
 import { SofliaWorkerApiClient } from './api-client.js';
 import type { ClaimedJob, ClaimedRenderJob, ClaimedTemplateBuildJob } from './api-client.js';
 import { loadConfig } from './config.js';
+import { localJobTypeToRemoteTable } from './local-job-state.js';
+import { LocalJobStore } from './local-job-store.js';
 import { log, logError, sanitizeLog } from './logging.js';
+import { RecoveryCoordinator } from './recovery-coordinator.js';
+import { isRecoverableJobError } from './recoverable-job-error.js';
 import { renderClaimedJob } from './render.js';
 import { buildTemplateJob } from './template-build.js';
 import { renderTemplatePreviewJob } from './template-preview.js';
@@ -13,6 +17,8 @@ export interface WorkerLoopEvents {
 
 type WorkerLoopClient = Pick<SofliaWorkerApiClient, 'heartbeat' | 'claimNext' | 'fail'> & {
   claimNextBatch?: () => Promise<ClaimedJob[]>;
+  complete?: SofliaWorkerApiClient['complete'];
+  refreshUploadUrl?: SofliaWorkerApiClient['refreshUploadUrl'];
 };
 
 type WorkerLoopDependencies = {
@@ -33,6 +39,7 @@ type WorkerLoopDependencies = {
     job: Extract<ClaimedJob, { jobType: 'template_preview' }>,
     options: Parameters<typeof renderTemplatePreviewJob>[2],
   ) => Promise<void>;
+  createLocalJobStore: () => Promise<LocalJobStore | null>;
   sleep: (ms: number) => Promise<void>;
 };
 
@@ -49,11 +56,17 @@ export async function startWorkerLoop(
     renderJob: (client, job, renderOptions) => renderClaimedJob(client as SofliaWorkerApiClient, job, renderOptions),
     buildTemplate: (client, job, buildOptions) => buildTemplateJob(client as SofliaWorkerApiClient, job, buildOptions),
     renderTemplatePreview: (client, job, previewOptions) => renderTemplatePreviewJob(client as SofliaWorkerApiClient, job, previewOptions),
+    createLocalJobStore: async () => {
+      const store = new LocalJobStore();
+      await store.initialize();
+      return store;
+    },
     sleep,
     ...options.dependencies,
   };
   const config = await dependencies.loadConfig();
   const client = dependencies.createClient(config.apiUrl, config.token);
+  const localJobStore = await dependencies.createLocalJobStore();
   const pollIntervalMs = Math.max(1000, options.pollIntervalMs || 5000);
   let shouldStop = false;
   const emit = options.onStatus || (() => {});
@@ -145,6 +158,8 @@ export async function startWorkerLoop(
       const isTemplatePreview = job.jobType === 'template_preview';
       if (isTemplateBuild) {
         await dependencies.buildTemplate(client, job, {
+          localJobStore: localJobStore || undefined,
+          localRetentionPolicy: config.localRetentionPolicy,
           onProgress: (progress) => {
             emit({
               state: 'rendering',
@@ -154,6 +169,8 @@ export async function startWorkerLoop(
         });
       } else if (isTemplatePreview) {
         await dependencies.renderTemplatePreview(client, job, {
+          localJobStore: localJobStore || undefined,
+          localRetentionPolicy: config.localRetentionPolicy,
           onProgress: (progress) => {
             emit({
               state: 'rendering',
@@ -164,6 +181,8 @@ export async function startWorkerLoop(
       } else {
         await dependencies.renderJob(client, job, {
           renderConcurrency: config.renderConcurrency,
+          localJobStore: localJobStore || undefined,
+          localRetentionPolicy: config.localRetentionPolicy,
           onProgress: (progress) => {
             emit({
               state: 'rendering',
@@ -188,8 +207,27 @@ export async function startWorkerLoop(
     } catch (error) {
       const message = sanitizeLog(error instanceof Error ? error.message : String(error));
       logError('Error procesando job:', error);
+      if (isRecoverableJobError(error)) {
+        emit({
+          state: error.stage === 'upload' ? 'upload_pending' : 'confirm_pending',
+          message: error.message,
+          jobId: job.jobId,
+          jobType: claimedJobType === 'template_build' ? 'template_build' : claimedJobType === 'template_preview' ? 'template_preview' : 'render',
+          stage: error.stage,
+        });
+        return;
+      }
       emit({ state: 'error', message, jobId: job.jobId });
       try {
+        localJobStore?.markNonRecoverableFailure(
+          job.jobId,
+          claimedJobType === 'template_build'
+            ? 'DESKTOP_WORKER_TEMPLATE_BUILD_FAILED'
+            : claimedJobType === 'template_preview'
+              ? 'DESKTOP_WORKER_TEMPLATE_PREVIEW_FAILED'
+              : 'DESKTOP_WORKER_RENDER_FAILED',
+          message,
+        );
         await client.fail(job.jobId, {
           errorCode: claimedJobType === 'template_build'
             ? 'DESKTOP_WORKER_TEMPLATE_BUILD_FAILED'
@@ -207,7 +245,33 @@ export async function startWorkerLoop(
 
   while (!shouldStop) {
     try {
-      await client.heartbeat('ONLINE', { maxConcurrentJobs: config.maxConcurrentJobs });
+      if (localJobStore && client.refreshUploadUrl && client.complete) {
+        const recovery = new RecoveryCoordinator(localJobStore, {
+          refreshUploadUrl: client.refreshUploadUrl.bind(client),
+          complete: client.complete.bind(client),
+        }, {
+          onEvent: (event) => emit(event),
+        });
+        await recovery.recoverPendingJobs();
+      }
+
+      await client.heartbeat('ONLINE', {
+        maxConcurrentJobs: config.maxConcurrentJobs,
+        localRecovery: localJobStore ? {
+          ...localJobStore.getRecoverySummary(),
+          jobs: localJobStore.listRecoverableJobs(25).map((job) => ({
+            jobId: job.jobId,
+            jobType: job.jobType,
+            remoteTable: job.remoteTable,
+            localState: job.localStatus,
+            artifactReady: Boolean(job.artifactChecksum),
+            artifactChecksum: job.artifactChecksum,
+            artifactSizeBytes: job.artifactSizeBytes,
+            cleanupPolicy: job.cleanupPolicy,
+            cleanupStatus: job.cleanupStatus,
+          })),
+        } : undefined,
+      });
       emit({ state: 'online', message: 'Conectado a SofLIA - Engine' });
       const jobs = client.claimNextBatch
         ? await client.claimNextBatch()
@@ -219,10 +283,14 @@ export async function startWorkerLoop(
       }
 
       if (jobs.every((job) => job.jobType === 'template_preview')) {
-        await Promise.all(jobs.map((job) => processClaimedJob(job)));
+        await Promise.all(jobs.map((job) => {
+          registerLocalClaim(job);
+          return processClaimedJob(job);
+        }));
       } else {
         for (const job of jobs) {
           if (shouldStop) break;
+          registerLocalClaim(job);
           await processClaimedJob(job);
         }
       }
@@ -241,4 +309,20 @@ export async function startWorkerLoop(
   }
   log('Worker local detenido');
   emit({ state: 'stopped', message: 'Worker local detenido' });
+  localJobStore?.close();
+
+  function registerLocalClaim(job: ClaimedJob): void {
+    const jobType = job.jobType === 'template_build' ? 'template_build' : job.jobType === 'template_preview' ? 'template_preview' : 'render';
+    localJobStore?.upsertClaimedJob({
+      jobId: job.jobId,
+      jobType,
+      remoteTable: localJobTypeToRemoteTable(jobType),
+      localStatus: 'claimed',
+      stage: 'claim',
+      cleanupPolicy: config.localRetentionPolicy || 'delete_on_remote_confirm',
+      bundleHash: job.bundleHash,
+      propsHash: job.jobType === 'template_build' ? undefined : job.propsHash,
+      outputStoragePath: job.jobType === 'template_preview' ? job.posterStoragePath : job.outputStoragePath,
+    });
+  }
 }

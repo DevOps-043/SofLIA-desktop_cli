@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('sofliaWorker', {
   stopWorker: () => ipcRenderer.invoke('app:stop-worker'),
   setApiUrl: (apiUrl) => ipcRenderer.invoke('app:set-api-url', apiUrl),
   setPowerProfile: (powerProfile) => ipcRenderer.invoke('app:set-power-profile', powerProfile),
+  setLocalRetentionPolicy: (policy) => ipcRenderer.invoke('app:set-local-retention-policy', policy),
   setCloseToTray: (value) => ipcRenderer.invoke('app:set-close-to-tray', value),
   setTheme: (theme) => ipcRenderer.invoke('app:set-theme', theme),
   getUpdateStatus: () => ipcRenderer.invoke('app:get-update-status'),

@@ -7,7 +7,10 @@ import { ensureBrowser, selectComposition } from '@remotion/renderer';
 import JSZip from 'jszip';
 import type { ClaimedTemplateBuildJob, SofliaWorkerApiClient } from './api-client.js';
 import { downloadAndExtractBundle } from './bundle.js';
+import type { LocalCleanupPolicy } from './local-job-state.js';
+import type { LocalJobStore } from './local-job-store.js';
 import { getWorkspaceDir } from './paths.js';
+import { RecoverableJobError } from './recoverable-job-error.js';
 import { getRemotionBinariesDirectory } from './remotion-binaries.js';
 import type { RenderProgressEvent } from './shared/worker-events.js';
 
@@ -24,6 +27,8 @@ type TemplateManifest = {
 
 type BuildTemplateJobOptions = {
   onProgress?: (event: RenderProgressEvent) => void;
+  localJobStore?: LocalJobStore;
+  localRetentionPolicy?: LocalCleanupPolicy;
 };
 
 const WORKER_NODE_MODULES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'node_modules');
@@ -216,25 +221,47 @@ export async function buildTemplateJob(
   });
   const compiledZip = await zipDirectory(outDir);
   const buildHash = sha256Buffer(compiledZip);
+  const recoveryZipPath = path.join(outDir, '.soflia-recovery-build.zip');
+  await fsp.writeFile(recoveryZipPath, compiledZip);
+  options.localJobStore?.markArtifactReady({
+    jobId: job.jobId,
+    artifactPath: recoveryZipPath,
+    artifactChecksum: buildHash,
+    artifactSizeBytes: compiledZip.byteLength,
+    outputStoragePath: job.outputStoragePath,
+  });
 
   await reportProgress(client, job, 92, 'Subiendo build compilado', 'template_upload', options.onProgress, {
     outputStoragePath: job.outputStoragePath,
     buildHash,
     sizeBytes: compiledZip.byteLength,
   });
-  const uploadResponse = await fetch(job.outputUploadUrl, {
-    method: 'PUT',
-    headers: { 'content-type': 'application/zip' },
-    body: new Blob([new Uint8Array(compiledZip)]),
-  });
-  if (!uploadResponse.ok) {
-    throw new Error(`No se pudo subir el build compilado: HTTP ${uploadResponse.status}`);
+  try {
+    options.localJobStore?.updateStage(job.jobId, 'uploading', 'template_upload');
+    const uploadResponse = await fetch(job.outputUploadUrl, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/zip' },
+      body: new Blob([new Uint8Array(compiledZip)]),
+    });
+    if (!uploadResponse.ok) {
+      throw new Error(`No se pudo subir el build compilado: HTTP ${uploadResponse.status}`);
+    }
+    options.localJobStore?.markUploadedPendingComplete(job.jobId);
+  } catch (error) {
+    options.localJobStore?.markUploadFailed(job.jobId, error);
+    throw new RecoverableJobError('Build compilado listo localmente, pero la subida quedo pendiente.', 'upload', error);
   }
 
-  await client.complete(job.jobId, {
-    outputStoragePath: job.outputStoragePath,
-    checksum: buildHash,
-    buildHash,
-    buildLog: `Template build completed locally. compositionId=${job.compositionId}`,
-  });
+  try {
+    await client.complete(job.jobId, {
+      outputStoragePath: job.outputStoragePath,
+      checksum: buildHash,
+      buildHash,
+      buildLog: `Template build completed locally. compositionId=${job.compositionId}`,
+    });
+    options.localJobStore?.markRemoteConfirmed(job.jobId);
+  } catch (error) {
+    options.localJobStore?.markConfirmFailed(job.jobId, error);
+    throw new RecoverableJobError('Build compilado subido, pero la confirmacion remota quedo pendiente.', 'complete', error);
+  }
 }
