@@ -6,28 +6,28 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import { LocalArtifactRetentionService } from '../local-artifact-retention.js';
 import { localJobTypeToRemoteTable } from '../local-job-state.js';
 import { LocalJobStore } from '../local-job-store.js';
-import { getWorkspaceDir } from '../paths.js';
 
-const originalAppData = process.env.APPDATA;
 let tempRoot = '';
 
 beforeEach(async () => {
   tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'soflia-worker-local-store-'));
-  process.env.APPDATA = tempRoot;
 });
 
 afterEach(async () => {
-  if (originalAppData === undefined) {
-    delete process.env.APPDATA;
-  } else {
-    process.env.APPDATA = originalAppData;
-  }
   await fsp.rm(tempRoot, { recursive: true, force: true });
 });
 
+function createTestStore() {
+  return new LocalJobStore(path.join(tempRoot, 'state', 'worker-state.db'));
+}
+
+function getTestWorkspaceDir() {
+  return path.join(tempRoot, 'workspace');
+}
+
 describe('LocalJobStore', () => {
   it('tracks recoverable artifact state and recovery summary', async () => {
-    const store = new LocalJobStore();
+    const store = createTestStore();
     await store.initialize();
 
     store.upsertClaimedJob({
@@ -43,7 +43,7 @@ describe('LocalJobStore', () => {
     });
     store.markArtifactReady({
       jobId: 'job-1',
-      artifactPath: path.join(getWorkspaceDir(), 'renders', 'job-1', 'output.mp4'),
+      artifactPath: path.join(getTestWorkspaceDir(), 'renders', 'job-1', 'output.mp4'),
       artifactChecksum: 'a'.repeat(64),
       artifactSizeBytes: 123,
       durationSeconds: 12,
@@ -63,9 +63,9 @@ describe('LocalJobStore', () => {
   });
 
   it('deletes confirmed artifacts when policy is delete_on_remote_confirm', async () => {
-    const store = new LocalJobStore();
+    const store = createTestStore();
     await store.initialize();
-    const artifactDir = path.join(getWorkspaceDir(), 'renders', 'job-2');
+    const artifactDir = path.join(getTestWorkspaceDir(), 'renders', 'job-2');
     const artifactPath = path.join(artifactDir, 'output.mp4');
     await fsp.mkdir(artifactDir, { recursive: true });
     await fsp.writeFile(artifactPath, 'video');
@@ -87,18 +87,19 @@ describe('LocalJobStore', () => {
     });
     store.markRemoteConfirmed('job-2');
 
-    const retention = new LocalArtifactRetentionService(store);
-    const [job] = store.listRecoverableJobs();
-    assert.equal(await retention.applyRetention(job!), 'deleted');
+    const retention = new LocalArtifactRetentionService(store, getTestWorkspaceDir());
+    const job = store.listRecoverableJobs().find((item) => item.jobId === 'job-2');
+    assert.ok(job);
+    assert.equal(await retention.applyRetention(job), 'deleted');
     await assert.rejects(() => fsp.access(artifactDir));
 
     store.close();
   });
 
   it('retains confirmed artifacts when policy is keep_all', async () => {
-    const store = new LocalJobStore();
+    const store = createTestStore();
     await store.initialize();
-    const artifactDir = path.join(getWorkspaceDir(), 'renders', 'job-3');
+    const artifactDir = path.join(getTestWorkspaceDir(), 'renders', 'job-3');
     const artifactPath = path.join(artifactDir, 'output.mp4');
     await fsp.mkdir(artifactDir, { recursive: true });
     await fsp.writeFile(artifactPath, 'video');
@@ -120,9 +121,10 @@ describe('LocalJobStore', () => {
     });
     store.markRemoteConfirmed('job-3');
 
-    const retention = new LocalArtifactRetentionService(store);
-    const [job] = store.listRecoverableJobs();
-    assert.equal(await retention.applyRetention(job!), 'retained');
+    const retention = new LocalArtifactRetentionService(store, getTestWorkspaceDir());
+    const job = store.listRecoverableJobs().find((item) => item.jobId === 'job-3');
+    assert.ok(job);
+    assert.equal(await retention.applyRetention(job), 'retained');
     await fsp.access(artifactPath);
 
     store.close();

@@ -4,7 +4,7 @@ Aplicacion de escritorio para renderizar videos de SofLIA - Engine usando la com
 
 ## Version actual
 
-### v0.2.0
+### v0.2.1
 
 Version enfocada en recuperacion local de jobs, retencion configurable, reintentos seguros de subida/confirmacion, builds de plantilla, previews, experiencia de escritorio, actualizaciones silenciosas y cache escribible de Remotion en equipos instalados.
 
@@ -126,9 +126,9 @@ GitHub Actions genera instaladores desde:
 .github/workflows/desktop-installers.yml
 ```
 
-El workflow valida que el tag coincida con la version de `package.json`. Para esta publicacion la version esperada es `0.2.0`, por lo tanto el tag debe ser `v0.2.0`.
+El workflow valida que el tag coincida con la version de `package.json`. Para esta publicacion la version esperada es `0.2.1`, por lo tanto el tag debe ser `v0.2.1`.
 
-### Comandos para subir v0.2.0
+### Comandos para subir v0.2.1
 
 Revisar estado:
 
@@ -151,7 +151,7 @@ git add .
 Crear commit:
 
 ```powershell
-git commit -m "Release v0.2.0 local recovery"
+git commit -m "Release v0.2.1 local recovery ci fix"
 ```
 
 Subir rama actual:
@@ -163,13 +163,13 @@ git push origin HEAD
 Crear tag:
 
 ```powershell
-git tag v0.2.0
+git tag v0.2.1
 ```
 
 Subir tag:
 
 ```powershell
-git push origin v0.2.0
+git push origin v0.2.1
 ```
 
 Al subir un tag `v*`, el workflow crea un GitHub Release y adjunta instaladores para Windows, macOS y Linux.
@@ -184,7 +184,7 @@ https://github.com/DevOps-043/SofLIA-desktop_cli/releases/latest/download/SofLIA
 
 ## Firma y notarizacion macOS
 
-Por ahora el workflow no exige secrets de GitHub para macOS. Esto permite publicar la v0.2.0 sin bloquear el release.
+Por ahora el workflow no exige secrets de GitHub para macOS. Esto permite publicar la v0.2.1 sin bloquear el release.
 
 Cuando decidamos activar firma y notarizacion, necesitaremos configurar:
 
