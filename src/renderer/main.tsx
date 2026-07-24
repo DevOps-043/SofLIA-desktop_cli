@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { APP_DISPLAY_VERSION, DEFAULT_API_URL } from '../shared/app-defaults';
+import type { ResourceMetricsSnapshot } from '../shared/resource-metrics';
 import type { AppUpdateState } from '../shared/update-types';
 import { getWorkerPowerProfile, WORKER_POWER_PROFILES } from '../shared/worker-capacity';
-import type { WorkerPowerProfile } from '../shared/worker-capacity';
+import type { WorkerChromiumGl, WorkerHardwareAcceleration, WorkerPowerProfile } from '../shared/worker-capacity';
 import type { WorkerRuntimeEvent } from '../shared/worker-events';
 import './styles.css';
 
@@ -18,6 +19,9 @@ type WorkerStatus = {
   powerProfile?: WorkerPowerProfile;
   maxConcurrentJobs?: number;
   renderConcurrency?: number;
+  hardwareAcceleration?: WorkerHardwareAcceleration;
+  chromiumGl?: WorkerChromiumGl;
+  videoBitrate?: string;
   localRetentionPolicy?: LocalRetentionPolicy;
   localRecovery?: {
     pendingUploads: number;
@@ -48,7 +52,7 @@ type LogLine = {
   detail?: Array<{ label: string; value: string }>;
 };
 
-type AppTab = 'worker' | 'bundle' | 'options';
+type AppTab = 'worker' | 'bundle' | 'resources' | 'options';
 
 declare global {
   interface Window {
@@ -63,6 +67,9 @@ declare global {
         powerProfile: WorkerPowerProfile;
         maxConcurrentJobs: number;
         renderConcurrency: number;
+        hardwareAcceleration: WorkerHardwareAcceleration;
+        chromiumGl: WorkerChromiumGl;
+        videoBitrate?: string;
         restarted: boolean;
         message?: string;
       }>;
@@ -72,6 +79,7 @@ declare global {
       }>;
       setCloseToTray: (value: boolean) => Promise<{ closeToTray: boolean }>;
       setTheme: (theme: 'light' | 'dark') => Promise<{ theme: 'light' | 'dark' }>;
+      getResourceMetrics: () => Promise<ResourceMetricsSnapshot>;
       getUpdateStatus: () => Promise<AppUpdateState>;
       checkForUpdates: () => Promise<AppUpdateState>;
       downloadUpdate: () => Promise<AppUpdateState>;
@@ -84,8 +92,12 @@ declare global {
         powerProfile?: WorkerPowerProfile;
         maxConcurrentJobs?: number;
         renderConcurrency?: number;
+        hardwareAcceleration?: WorkerHardwareAcceleration;
+        chromiumGl?: WorkerChromiumGl;
+        videoBitrate?: string;
         localRetentionPolicy?: LocalRetentionPolicy;
       }) => void) => () => void;
+      onResourceMetrics: (callback: (payload: ResourceMetricsSnapshot) => void) => () => void;
       onWorkerEvent: (callback: (event: WorkerRuntimeEvent) => void) => () => void;
     };
   }
@@ -125,6 +137,8 @@ function getDetailEntries(detail?: Record<string, unknown>): Array<{ label: stri
     manifest: 'Manifest',
     outputDirectory: 'Carpeta de salida',
     outputStoragePath: 'Destino storage',
+    hardwareAcceleration: 'GPU encoding',
+    chromiumGl: 'Chromium GL',
     maxConcurrentJobs: 'Capacidad',
     propsHash: 'Props SHA-256',
     powerProfile: 'Perfil',
@@ -133,6 +147,7 @@ function getDetailEntries(detail?: Record<string, unknown>): Array<{ label: stri
     sizeBytes: 'Tamano ZIP',
     source: 'Fuente',
     templateVersionId: 'Version ID',
+    videoBitrate: 'Video bitrate',
   };
   return Object.entries(detail)
     .filter(([, value]) => value !== undefined && value !== null && formatDetailValue(value) !== '')
@@ -193,6 +208,33 @@ function formatBytes(value = 0): string {
   return `${value} B`;
 }
 
+function formatPercent(value = 0): string {
+  return `${Math.max(0, Math.min(100, value)).toFixed(value >= 10 ? 0 : 1)}%`;
+}
+
+function getProgressWidth(value = 0): string {
+  return `${Math.max(0, Math.min(100, value))}%`;
+}
+
+function getWorkerStateLabel(state?: string): string {
+  const labels: Record<string, string> = {
+    starting: 'Iniciando',
+    online: 'Disponible',
+    idle: 'En reposo',
+    claiming: 'Reclamando',
+    rendering: 'Renderizando',
+    completed: 'Completado',
+    recovering: 'Recuperando',
+    upload_pending: 'Subida pendiente',
+    confirm_pending: 'Confirmacion pendiente',
+    cleanup_completed: 'Limpieza completa',
+    cleanup_skipped: 'Limpieza omitida',
+    error: 'Error',
+    stopped: 'Detenido',
+  };
+  return state ? labels[state] || state.replace(/_/g, ' ') : 'Sin muestra';
+}
+
 function mergeWorkerEvent(current: WorkerRuntimeEvent | null, event: WorkerRuntimeEvent): WorkerRuntimeEvent {
   if (!current || !current.jobId || current.jobId !== event.jobId) return event;
   return {
@@ -250,6 +292,182 @@ function LogList({ logs }: { logs: LogLine[] }) {
   );
 }
 
+function ResourceGauge({ label, value, detail }: { label: string; value: number; detail?: string }) {
+  return (
+    <div className="resource-gauge">
+      <div>
+        <span>{label}</span>
+        <strong>{formatPercent(value)}</strong>
+      </div>
+      <div className="progress-track">
+        <span style={{ width: getProgressWidth(value) }} />
+      </div>
+      {detail ? <small>{detail}</small> : null}
+    </div>
+  );
+}
+
+function ResourceHistory({ history }: { history: ResourceMetricsSnapshot[] }) {
+  const visibleHistory = history.slice(-24);
+  if (visibleHistory.length === 0) return <p className="muted empty">Esperando muestras del monitor.</p>;
+  return (
+    <div className="resource-history" aria-label="Historico de uso">
+      {visibleHistory.map((sample) => (
+        <span
+          key={sample.sampledAt}
+          title={`${new Date(sample.sampledAt).toLocaleTimeString()} - SofLIA ${formatPercent(sample.app.cpuPercent)} / Sistema ${formatPercent(sample.system.cpuPercent)}`}
+        >
+          <i style={{ height: getProgressWidth(sample.system.cpuPercent) }} />
+          <b style={{ height: getProgressWidth(sample.app.cpuPercent) }} />
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function ResourcesTab({ metrics, history }: { metrics: ResourceMetricsSnapshot | null; history: ResourceMetricsSnapshot[] }) {
+  const activeJob = metrics?.activeJob;
+  const systemMemoryPercent = metrics?.system.memoryTotalBytes
+    ? (metrics.system.memoryUsedBytes / metrics.system.memoryTotalBytes) * 100
+    : 0;
+  const topProcesses = (metrics?.processes || []).slice(0, 8);
+  const sampledAt = metrics?.sampledAt ? new Date(metrics.sampledAt).toLocaleTimeString() : 'Sin muestra';
+  const jobPercent = Math.max(0, Math.min(100, activeJob?.percent ?? 0));
+
+  return (
+    <section className="resources-layout">
+      <section className="status-hero resources-hero">
+        <div>
+          <span className="eyebrow">Recursos locales</span>
+          <h2>{getWorkerStateLabel(metrics?.workerState)}</h2>
+          <p>
+            {activeJob?.jobId
+              ? `Midiendo consumo durante el job ${formatJobId(activeJob.jobId)}.`
+              : 'Midiendo consumo local de SofLIA en reposo.'}
+          </p>
+          {metrics?.unavailableReason ? <p className="status-error">{metrics.unavailableReason}</p> : null}
+        </div>
+          <div className="status-metrics">
+            <div className="metric">
+              <span>CPU SofLIA</span>
+              <strong>{formatPercent(metrics?.app.cpuPercent || 0)}</strong>
+            </div>
+            <div className="metric">
+              <span>GPU SofLIA</span>
+              <strong>{formatPercent(metrics?.app.gpuPercent || 0)}</strong>
+            </div>
+            <div className="metric">
+              <span>RAM SofLIA</span>
+              <strong>{formatBytes(metrics?.app.memoryBytes || 0)}</strong>
+            </div>
+            <div className="metric">
+              <span>CPU sistema</span>
+              <strong>{formatPercent(metrics?.system.cpuPercent || 0)}</strong>
+            </div>
+            <div className="metric">
+              <span>GPU sistema</span>
+              <strong>{formatPercent(metrics?.system.gpuPercent || 0)}</strong>
+            </div>
+            <div className="metric">
+              <span>RAM sistema</span>
+              <strong>{formatBytes(metrics?.system.memoryUsedBytes || 0)}</strong>
+            </div>
+        </div>
+      </section>
+
+      <section className="resources-grid">
+        <section className="panel resources-monitor-panel">
+          <div className="section-heading compact">
+            <div>
+              <h2>Uso en tiempo real</h2>
+              <p>Ultima muestra: {sampledAt}</p>
+            </div>
+            <Badge text={`${metrics?.app.processCount || 0} procesos`} kind={metrics?.app.processCount ? 'busy' : ''} />
+          </div>
+          <div className="resource-gauge-columns">
+            <div className="resource-metric-column">
+              <span className="resource-column-title">SofLIA Engine</span>
+              <ResourceGauge label="CPU SofLIA" value={metrics?.app.cpuPercent || 0} detail="Procesos detectados del worker" />
+              <ResourceGauge label="GPU SofLIA" value={metrics?.app.gpuPercent || 0} detail={metrics?.app.gpuUnavailableReason || 'Uso detectado por GPU Engine'} />
+              <ResourceGauge label="RAM SofLIA" value={systemMemoryPercent > 0 ? ((metrics?.app.memoryBytes || 0) / (metrics?.system.memoryTotalBytes || 1)) * 100 : 0} detail={formatBytes(metrics?.app.memoryBytes || 0)} />
+            </div>
+            <div className="resource-metric-column">
+              <span className="resource-column-title">Sistema</span>
+              <ResourceGauge label="CPU sistema" value={metrics?.system.cpuPercent || 0} detail={`${metrics?.system.cpuCount || 0} hilos logicos`} />
+              <ResourceGauge label="GPU sistema" value={metrics?.system.gpuPercent || 0} detail={metrics?.system.gpuUnavailableReason || 'Uso total detectado por Windows'} />
+              <ResourceGauge label="RAM sistema" value={systemMemoryPercent} detail={`${formatBytes(metrics?.system.memoryUsedBytes || 0)} de ${formatBytes(metrics?.system.memoryTotalBytes || 0)}`} />
+            </div>
+          </div>
+          <ResourceHistory history={history} />
+          <div className="resource-history-legend">
+            <span><i /> Sistema</span>
+            <span><b /> SofLIA</span>
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="section-heading compact">
+            <div>
+              <h2>Job activo</h2>
+              <p>{activeJob?.message || 'Sin render o bundle activo.'}</p>
+            </div>
+            <Badge text={activeJob ? `${jobPercent}%` : 'Reposo'} kind={activeJob ? 'busy' : ''} />
+          </div>
+          <div className="current-job-card">
+            <div className="job-meta-grid">
+              <div>
+                <span>Tipo</span>
+                <strong>{activeJob?.jobType === 'template_build' ? 'Bundle' : activeJob?.jobType === 'template_preview' ? 'Preview' : activeJob ? 'Render' : 'Ninguno'}</strong>
+              </div>
+              <div>
+                <span>Etapa</span>
+                <strong>{activeJob?.stage ? activeJob.stage.replace(/_/g, ' ') : 'En reposo'}</strong>
+              </div>
+              <div>
+                <span>Composicion</span>
+                <strong>{activeJob?.compositionId || 'Sin job activo'}</strong>
+              </div>
+              <div>
+                <span>Build</span>
+                <strong>{activeJob?.buildId ? formatJobId(activeJob.buildId) : 'No aplica'}</strong>
+              </div>
+            </div>
+            <div className="progress-track" aria-label="Progreso del job activo en recursos">
+              <span style={{ width: getProgressWidth(jobPercent) }} />
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section className="panel">
+        <div className="section-heading compact">
+          <div>
+            <h2>Procesos principales</h2>
+            <p>Ordenados por CPU y memoria dentro del arbol detectado.</p>
+          </div>
+          {metrics?.app.unavailableReason ? <Badge text="Limitado" kind="warn" /> : null}
+        </div>
+        {topProcesses.length === 0 ? (
+          <p className="muted empty">{metrics?.app.unavailableReason || 'Esperando datos de procesos.'}</p>
+        ) : (
+          <div className="process-list">
+            {topProcesses.map((processMetric) => (
+              <div className="process-row" key={`${processMetric.pid}-${processMetric.type}`}>
+                <div>
+                  <strong>{processMetric.name}</strong>
+                  <small>PID {processMetric.pid} - {processMetric.type}</small>
+                </div>
+                <span>{formatPercent(processMetric.cpuPercent)}</span>
+                <span>{formatBytes(processMetric.memoryBytes)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </section>
+  );
+}
+
 function getUpdateBadge(updateState: AppUpdateState): { text: string; kind: 'ok' | 'busy' | 'bad' | 'warn' | '' } {
   if (updateState.status === 'available') return { text: 'Disponible', kind: 'warn' };
   if (updateState.status === 'downloading' || updateState.status === 'checking') return { text: 'En progreso', kind: 'busy' };
@@ -272,7 +490,7 @@ function BrandMark() {
   if (!showLogo) return <div className="brand-mark-fallback" aria-hidden="true">S</div>;
   return (
     <div className="brand-mark">
-      <img src="/soflia-logo.png" alt="SofLIA" onError={() => setShowLogo(false)} />
+      <img src="./soflia-logo.png" alt="SofLIA" onError={() => setShowLogo(false)} />
     </div>
   );
 }
@@ -287,6 +505,8 @@ function App() {
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [updateState, setUpdateState] = useState<AppUpdateState>({ status: 'idle', currentVersion: APP_DISPLAY_VERSION });
   const [currentJob, setCurrentJob] = useState<WorkerRuntimeEvent | null>(null);
+  const [resourceMetrics, setResourceMetrics] = useState<ResourceMetricsSnapshot | null>(null);
+  const [resourceHistory, setResourceHistory] = useState<ResourceMetricsSnapshot[]>([]);
   const [activeTab, setActiveTab] = useState<AppTab>('worker');
 
   const addLog = useCallback((
@@ -305,6 +525,11 @@ function App() {
     const nextStatus = await window.sofliaWorker.getStatus();
     setStatus(nextStatus);
     if (nextStatus.apiUrl) setApiUrl(nextStatus.apiUrl);
+  }, []);
+
+  const recordResourceMetrics = useCallback((nextMetrics: ResourceMetricsSnapshot) => {
+    setResourceMetrics(nextMetrics);
+    setResourceHistory((current) => [...current, nextMetrics].slice(-32));
   }, []);
 
   useEffect(() => {
@@ -339,20 +564,26 @@ function App() {
         powerProfile: payload.powerProfile ?? current.powerProfile,
         maxConcurrentJobs: payload.maxConcurrentJobs ?? current.maxConcurrentJobs,
         renderConcurrency: payload.renderConcurrency ?? current.renderConcurrency,
+        hardwareAcceleration: payload.hardwareAcceleration ?? current.hardwareAcceleration,
+        chromiumGl: payload.chromiumGl ?? current.chromiumGl,
+        videoBitrate: payload.videoBitrate ?? current.videoBitrate,
         localRetentionPolicy: payload.localRetentionPolicy ?? current.localRetentionPolicy,
       }));
     });
     const removeUpdateListener = window.sofliaWorker.onUpdateStatus((payload) => {
       setUpdateState(payload);
     });
+    const removeResourceListener = window.sofliaWorker.onResourceMetrics(recordResourceMetrics);
     refreshStatus().catch((error) => addLog(getErrorMessage(error), 'bad'));
     window.sofliaWorker.getUpdateStatus().then(setUpdateState).catch((error) => addLog(getErrorMessage(error), 'bad'));
+    window.sofliaWorker.getResourceMetrics().then(recordResourceMetrics).catch((error) => addLog(getErrorMessage(error), 'bad'));
     return () => {
       removeWorkerListener();
       removeSettingsListener();
       removeUpdateListener();
+      removeResourceListener();
     };
-  }, [addLog, refreshStatus]);
+  }, [addLog, recordResourceMetrics, refreshStatus]);
 
   const statusBadge = status.configured
     ? { text: 'Vinculado', kind: 'ok' as const }
@@ -411,6 +642,9 @@ function App() {
         powerProfile: result.powerProfile,
         maxConcurrentJobs: result.maxConcurrentJobs,
         renderConcurrency: result.renderConcurrency,
+        hardwareAcceleration: result.hardwareAcceleration,
+        chromiumGl: result.chromiumGl,
+        videoBitrate: result.videoBitrate,
       }));
       addLog(result.message || `Perfil ${getWorkerPowerProfile(profile).label} guardado.`, result.restarted ? 'ok' : 'info');
     }, { refresh: false, errorTarget: 'options' });
@@ -444,6 +678,10 @@ function App() {
             <button className={activeTab === 'bundle' ? 'is-active' : ''} onClick={() => setActiveTab('bundle')}>
               <span>Bundles</span>
               <small>{bundleLogs.length > 0 ? `${bundleLogs.length} eventos` : 'En espera'}</small>
+            </button>
+            <button className={activeTab === 'resources' ? 'is-active' : ''} onClick={() => setActiveTab('resources')}>
+              <span>Recursos</span>
+              <small>{resourceMetrics ? formatPercent(resourceMetrics.app.cpuPercent) : 'Midiendo'}</small>
             </button>
             <button className={activeTab === 'options' ? 'is-active' : ''} onClick={() => setActiveTab('options')}>
               <span>Opciones</span>
@@ -641,6 +879,8 @@ function App() {
               <LogList logs={bundleLogs} />
             </section>
           </section>
+        ) : activeTab === 'resources' ? (
+          <ResourcesTab metrics={resourceMetrics} history={resourceHistory} />
         ) : (
           <section className="options-layout">
             <section className="panel power-panel">
@@ -667,6 +907,8 @@ function App() {
                     <span className="power-card-metrics">
                       <span>{profile.maxConcurrentJobs} jobs</span>
                       <span>{profile.renderConcurrency} hilos render</span>
+                      <span>{profile.hardwareAcceleration === 'disable' ? 'GPU off' : 'GPU auto'}</span>
+                      <span>GL {profile.chromiumGl || 'auto'}</span>
                     </span>
                     <small>{profile.bestFor}</small>
                     <ul>

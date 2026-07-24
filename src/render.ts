@@ -9,10 +9,14 @@ import { getWorkspaceDir } from './paths.js';
 import { RecoverableJobError } from './recoverable-job-error.js';
 import { getRemotionBinariesDirectory } from './remotion-binaries.js';
 import type { RenderProgressEvent } from './shared/worker-events.js';
+import type { WorkerChromiumGl, WorkerHardwareAcceleration } from './shared/worker-capacity.js';
 
 type RenderClaimedJobOptions = {
   onProgress?: (event: RenderProgressEvent) => void;
   renderConcurrency?: number;
+  hardwareAcceleration?: WorkerHardwareAcceleration;
+  chromiumGl?: WorkerChromiumGl;
+  videoBitrate?: string;
   localJobStore?: LocalJobStore;
   localRetentionPolicy?: LocalCleanupPolicy;
 };
@@ -61,12 +65,14 @@ export async function renderClaimedJob(
   await ensureBrowser();
 
   await reportProgress(client, job, 25, 'Resolviendo composicion', 'composition_select', options.onProgress);
+  const chromiumOptions = options.chromiumGl ? { gl: options.chromiumGl } : undefined;
   const composition = await selectComposition({
     serveUrl,
     id: job.compositionId,
     inputProps: job.resolvedProps,
     timeoutInMilliseconds: job.timeoutInMilliseconds,
     binariesDirectory,
+    chromiumOptions,
   });
 
   let lastPercent = 30;
@@ -78,7 +84,10 @@ export async function renderClaimedJob(
     inputProps: job.resolvedProps,
     timeoutInMilliseconds: job.timeoutInMilliseconds,
     binariesDirectory,
+    chromiumOptions,
     concurrency: options.renderConcurrency,
+    hardwareAcceleration: options.hardwareAcceleration,
+    videoBitrate: options.videoBitrate,
     onProgress: ({ progress }) => {
       const percent = Math.round(30 + progress * 55);
       if (percent > lastPercent) {

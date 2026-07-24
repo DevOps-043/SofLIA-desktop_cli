@@ -4,9 +4,9 @@ Aplicacion de escritorio para renderizar videos de SofLIA - Engine usando la com
 
 ## Version actual
 
-### v0.2.1
+### v0.2.2
 
-Version enfocada en recuperacion local de jobs, retencion configurable, reintentos seguros de subida/confirmacion, builds de plantilla, previews, experiencia de escritorio, actualizaciones silenciosas y cache escribible de Remotion en equipos instalados.
+Patch enfocada en corregir el logo interno dentro de la app instalada, mantener la recuperacion local de jobs, retencion configurable, reintentos seguros de subida/confirmacion, builds de plantilla, previews, experiencia de escritorio, actualizaciones silenciosas y cache escribible de Remotion en equipos instalados.
 
 Incluye:
 
@@ -35,6 +35,7 @@ Incluye:
 - Opcion para mantener la app en segundo plano.
 - Opcion para cerrar completamente desde la configuracion o desde el icono de segundo plano.
 - Icono de app, instalador, bandeja del sistema y logo interno sincronizados desde `logo.png`.
+- Logo interno resuelto con ruta relativa para que aparezca correctamente en builds instalados con `file://`.
 - Workflow de GitHub Actions para generar instaladores por sistema operativo.
 - Preparacion tecnica para firma y notarizacion de macOS, pendiente de activar cuando tengamos secrets.
 
@@ -126,9 +127,9 @@ GitHub Actions genera instaladores desde:
 .github/workflows/desktop-installers.yml
 ```
 
-El workflow valida que el tag coincida con la version de `package.json`. Para esta publicacion la version esperada es `0.2.1`, por lo tanto el tag debe ser `v0.2.1`.
+El workflow valida que el tag coincida con la version de `package.json`. Para esta publicacion la version esperada es `0.2.2`, por lo tanto el tag debe ser `v0.2.2`.
 
-### Comandos para subir v0.2.1
+### Comandos para subir v0.2.2
 
 Revisar estado:
 
@@ -151,7 +152,7 @@ git add .
 Crear commit:
 
 ```powershell
-git commit -m "Release v0.2.1 local recovery ci fix"
+git commit -m "Release v0.2.2 worker update"
 ```
 
 Subir rama actual:
@@ -163,13 +164,13 @@ git push origin HEAD
 Crear tag:
 
 ```powershell
-git tag v0.2.1
+git tag v0.2.2
 ```
 
 Subir tag:
 
 ```powershell
-git push origin v0.2.1
+git push origin v0.2.2
 ```
 
 Al subir un tag `v*`, el workflow crea un GitHub Release y adjunta instaladores para Windows, macOS y Linux.
@@ -184,7 +185,7 @@ https://github.com/DevOps-043/SofLIA-desktop_cli/releases/latest/download/SofLIA
 
 ## Firma y notarizacion macOS
 
-Por ahora el workflow no exige secrets de GitHub para macOS. Esto permite publicar la v0.2.1 sin bloquear el release.
+Por ahora el workflow no exige secrets de GitHub para macOS. Esto permite publicar la v0.2.2 sin bloquear el release.
 
 Cuando decidamos activar firma y notarizacion, necesitaremos configurar:
 

@@ -4,7 +4,7 @@ import { getConfigPath } from './paths.js';
 import { normalizeLocalRetentionPolicy } from './local-job-state.js';
 import type { LocalCleanupPolicy } from './local-job-state.js';
 import { DEFAULT_WORKER_POWER_PROFILE, getWorkerPowerProfile } from './shared/worker-capacity.js';
-import type { WorkerPowerProfile } from './shared/worker-capacity.js';
+import type { WorkerChromiumGl, WorkerHardwareAcceleration, WorkerPowerProfile } from './shared/worker-capacity.js';
 
 export interface WorkerConfig {
   apiUrl: string;
@@ -13,6 +13,9 @@ export interface WorkerConfig {
   powerProfile?: WorkerPowerProfile;
   maxConcurrentJobs?: number;
   renderConcurrency?: number;
+  hardwareAcceleration?: WorkerHardwareAcceleration;
+  chromiumGl?: WorkerChromiumGl;
+  videoBitrate?: string;
   localRetentionPolicy?: LocalCleanupPolicy;
 }
 
@@ -62,6 +65,9 @@ export async function loadConfig(): Promise<WorkerConfig> {
     powerProfile: powerProfile.id,
     maxConcurrentJobs: powerProfile.maxConcurrentJobs,
     renderConcurrency: powerProfile.renderConcurrency,
+    hardwareAcceleration: powerProfile.hardwareAcceleration,
+    chromiumGl: powerProfile.chromiumGl,
+    videoBitrate: powerProfile.videoBitrate,
     localRetentionPolicy: normalizeLocalRetentionPolicy(parsed.localRetentionPolicy),
   };
 }

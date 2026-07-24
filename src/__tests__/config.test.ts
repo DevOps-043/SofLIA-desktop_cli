@@ -40,6 +40,9 @@ describe('worker config', () => {
     assert.equal(config.powerProfile, 'high');
     assert.equal(config.maxConcurrentJobs, 4);
     assert.equal(config.renderConcurrency, 4);
+    assert.equal(config.hardwareAcceleration, 'if-possible');
+    assert.equal(config.chromiumGl, 'angle');
+    assert.equal(config.videoBitrate, '8M');
   });
 
   it('moves the process cwd to the user workspace for Remotion browser cache writes', async () => {

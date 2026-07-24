@@ -88,6 +88,9 @@ export async function startWorkerLoop(
     powerProfile: config.powerProfile,
     maxConcurrentJobs: config.maxConcurrentJobs,
     renderConcurrency: config.renderConcurrency,
+    hardwareAcceleration: config.hardwareAcceleration,
+    chromiumGl: config.chromiumGl,
+    videoBitrate: config.videoBitrate,
   });
   emit({
     state: 'starting',
@@ -98,6 +101,9 @@ export async function startWorkerLoop(
       powerProfile: config.powerProfile,
       maxConcurrentJobs: config.maxConcurrentJobs,
       renderConcurrency: config.renderConcurrency,
+      hardwareAcceleration: config.hardwareAcceleration,
+      chromiumGl: config.chromiumGl,
+      videoBitrate: config.videoBitrate,
     },
   });
 
@@ -181,6 +187,9 @@ export async function startWorkerLoop(
       } else {
         await dependencies.renderJob(client, job, {
           renderConcurrency: config.renderConcurrency,
+          hardwareAcceleration: config.hardwareAcceleration,
+          chromiumGl: config.chromiumGl,
+          videoBitrate: config.videoBitrate,
           localJobStore: localJobStore || undefined,
           localRetentionPolicy: config.localRetentionPolicy,
           onProgress: (progress) => {

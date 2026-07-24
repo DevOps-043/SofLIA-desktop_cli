@@ -6,6 +6,7 @@ import { getWorkspaceDir } from './paths.js';
 
 type DownloadAndExtractBundleOptions = {
   requireSha256?: boolean;
+  requireIndex?: boolean;
 };
 
 function isSha256Hash(value: string): boolean {
@@ -23,6 +24,7 @@ export async function downloadAndExtractBundle(
   bundleHash: string,
   options: DownloadAndExtractBundleOptions = {},
 ): Promise<string> {
+  const requireIndex = options.requireIndex !== false;
   const normalizedHash = bundleHash.trim().toLowerCase();
   if (options.requireSha256 && !isSha256Hash(normalizedHash)) {
     throw new Error('Bundle hash invalido: se requiere SHA-256 para compilar plantillas.');
@@ -30,12 +32,14 @@ export async function downloadAndExtractBundle(
 
   const workspaceDir = getWorkspaceDir();
   const bundleRoot = path.join(workspaceDir, 'bundles', cacheKeyForBundleHash(bundleHash));
-  const marker = path.join(bundleRoot, '.ready');
+  const marker = path.join(bundleRoot, requireIndex ? '.ready' : '.source-ready');
   const indexPath = path.join(bundleRoot, 'index.html');
 
   try {
     await fsp.access(marker);
-    await fsp.access(indexPath);
+    if (requireIndex) {
+      await fsp.access(indexPath);
+    }
     return bundleRoot;
   } catch {
     await fsp.rm(bundleRoot, { recursive: true, force: true });
@@ -68,11 +72,13 @@ export async function downloadAndExtractBundle(
     await fsp.writeFile(destination, await file.async('nodebuffer'));
   }
 
-  try {
-    await fsp.access(indexPath);
-  } catch {
-    await fsp.rm(bundleRoot, { recursive: true, force: true });
-    throw new Error('REMOTION_BUNDLE_INVALID: el ZIP extraido no contiene index.html en la raiz. Se requiere un bundle compilado de Remotion, no el ZIP fuente.');
+  if (requireIndex) {
+    try {
+      await fsp.access(indexPath);
+    } catch {
+      await fsp.rm(bundleRoot, { recursive: true, force: true });
+      throw new Error('REMOTION_BUNDLE_INVALID: el ZIP extraido no contiene index.html en la raiz. Se requiere un bundle compilado de Remotion, no el ZIP fuente.');
+    }
   }
 
   await fsp.writeFile(marker, new Date().toISOString());

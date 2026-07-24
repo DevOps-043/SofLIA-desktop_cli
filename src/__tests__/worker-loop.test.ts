@@ -61,6 +61,9 @@ describe('startWorkerLoop', () => {
     const controller = new AbortController();
     const job = createJob('job-progress');
     let renderConcurrency: number | undefined;
+    let hardwareAcceleration: string | undefined;
+    let chromiumGl: string | null | undefined;
+    let videoBitrate: string | undefined;
 
     await startWorkerLoop({
       signal: controller.signal,
@@ -76,6 +79,9 @@ describe('startWorkerLoop', () => {
           powerProfile: 'high',
           maxConcurrentJobs: 4,
           renderConcurrency: 4,
+          hardwareAcceleration: 'if-possible',
+          chromiumGl: 'angle',
+          videoBitrate: '8M',
         }),
         createClient: () => ({
           heartbeat: async () => ({}),
@@ -85,6 +91,9 @@ describe('startWorkerLoop', () => {
         createLocalJobStore: async () => null,
         renderJob: async (_client, claimedJob, options) => {
           renderConcurrency = options?.renderConcurrency;
+          hardwareAcceleration = options?.hardwareAcceleration;
+          chromiumGl = options?.chromiumGl;
+          videoBitrate = options?.videoBitrate;
           options?.onProgress?.({
             jobId: claimedJob.jobId,
             compositionId: claimedJob.compositionId,
@@ -102,6 +111,9 @@ describe('startWorkerLoop', () => {
     assert.equal(progressEvent?.compositionId, 'full-slides');
     assert.equal(progressEvent?.stage, 'render');
     assert.equal(renderConcurrency, 4);
+    assert.equal(hardwareAcceleration, 'if-possible');
+    assert.equal(chromiumGl, 'angle');
+    assert.equal(videoBitrate, '8M');
   });
 
   it('claims queued jobs sequentially instead of rendering in parallel', async () => {

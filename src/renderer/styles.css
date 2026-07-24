@@ -489,6 +489,203 @@ small {
   top: 44px;
 }
 
+.resources-layout {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.resources-hero .status-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.resources-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.resources-monitor-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.resource-gauge-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.resource-metric-column {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.resource-column-title {
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.resource-gauge {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-soft);
+}
+
+.resource-gauge > div:first-child {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.resource-gauge span {
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.resource-gauge strong {
+  color: var(--text);
+  font-size: 18px;
+}
+
+.resource-gauge .progress-track {
+  margin-top: 0;
+}
+
+.resource-history {
+  height: 132px;
+  display: grid;
+  grid-template-columns: repeat(24, minmax(5px, 1fr));
+  align-items: end;
+  gap: 5px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-soft);
+}
+
+.resource-history span {
+  position: relative;
+  height: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--surface-strong);
+  overflow: hidden;
+}
+
+.resource-history i,
+.resource-history b {
+  position: absolute;
+  bottom: 0;
+  width: 100%;
+  min-height: 2px;
+  border-radius: inherit;
+}
+
+.resource-history i {
+  background: rgba(94, 107, 120, .56);
+}
+
+.resource-history b {
+  width: 54%;
+  background: var(--soflia-aqua);
+}
+
+:root[data-theme="dark"] .resource-history i {
+  background: rgba(168, 179, 194, .46);
+}
+
+.resource-history-legend {
+  display: flex;
+  justify-content: flex-end;
+  gap: 14px;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.resource-history-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.resource-history-legend i,
+.resource-history-legend b {
+  width: 10px;
+  height: 10px;
+  display: inline-block;
+  border-radius: 999px;
+}
+
+.resource-history-legend i {
+  background: rgba(94, 107, 120, .72);
+}
+
+.resource-history-legend b {
+  background: var(--soflia-aqua);
+}
+
+:root[data-theme="dark"] .resource-history-legend i {
+  background: rgba(168, 179, 194, .78);
+}
+
+.process-list {
+  display: grid;
+  gap: 8px;
+}
+
+.process-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 86px 112px;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.process-row div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.process-row strong,
+.process-row small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.process-row strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.process-row span {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 900;
+  text-align: right;
+}
+
 .options-layout {
   display: grid;
   gap: 16px;
@@ -1105,13 +1302,14 @@ small {
   }
 
   .side-nav {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .app-header,
   .status-hero,
   .workspace-grid,
-  .bundle-layout {
+  .bundle-layout,
+  .resources-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1163,8 +1361,18 @@ small {
 
   .power-profile-grid,
   .options-grid,
-  .power-card-metrics {
+  .power-card-metrics,
+  .resource-gauge-columns,
+  .resources-hero .status-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .process-row {
+    grid-template-columns: 1fr;
+  }
+
+  .process-row span {
+    text-align: left;
   }
 
   .segmented-control {

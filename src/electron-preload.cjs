@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('sofliaWorker', {
   setLocalRetentionPolicy: (policy) => ipcRenderer.invoke('app:set-local-retention-policy', policy),
   setCloseToTray: (value) => ipcRenderer.invoke('app:set-close-to-tray', value),
   setTheme: (theme) => ipcRenderer.invoke('app:set-theme', theme),
+  getResourceMetrics: () => ipcRenderer.invoke('app:get-resource-metrics'),
   getUpdateStatus: () => ipcRenderer.invoke('app:get-update-status'),
   checkForUpdates: () => ipcRenderer.invoke('app:check-for-updates'),
   downloadUpdate: () => ipcRenderer.invoke('app:download-update'),
@@ -26,6 +27,11 @@ contextBridge.exposeInMainWorld('sofliaWorker', {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('app:settings', listener);
     return () => ipcRenderer.removeListener('app:settings', listener);
+  },
+  onResourceMetrics: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('app:resource-metrics', listener);
+    return () => ipcRenderer.removeListener('app:resource-metrics', listener);
   },
   onWorkerEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);

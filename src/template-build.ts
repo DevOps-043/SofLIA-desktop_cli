@@ -171,7 +171,10 @@ export async function buildTemplateJob(
     bundleHash: job.bundleHash,
     source: 'ZIP firmado desde SofLIA',
   });
-  const bundleRoot = await downloadAndExtractBundle(job.bundleUrl, job.bundleHash, { requireSha256: true });
+  const bundleRoot = await downloadAndExtractBundle(job.bundleUrl, job.bundleHash, {
+    requireSha256: true,
+    requireIndex: false,
+  });
   const manifest = await readManifest(bundleRoot);
   const entryPoint = await prepareTemplateEntryPoint(bundleRoot, manifest, job.compositionId);
   const outDir = path.join(getWorkspaceDir(), 'template-builds', job.buildId);

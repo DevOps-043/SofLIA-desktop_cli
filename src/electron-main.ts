@@ -10,8 +10,11 @@ import { normalizeLocalRetentionPolicy } from './local-job-state.js';
 import { LocalJobStore } from './local-job-store.js';
 import { sanitizeLog } from './logging.js';
 import { configureWritableWorkingDirectory, getAppDataDir, getConfigPath } from './paths.js';
+import { ResourceMonitor } from './resource-monitor.js';
+import type { ResourceActiveJob } from './shared/resource-metrics.js';
 import { DEFAULT_WORKER_POWER_PROFILE, getWorkerPowerProfile } from './shared/worker-capacity.js';
 import type { AppUpdateState } from './shared/update-types.js';
+import type { WorkerRuntimeEvent, WorkerRuntimeState } from './shared/worker-events.js';
 import { getWorkerStartMessage, getWorkerStatusMessage } from './worker-link-state.js';
 import { startWorkerLoop } from './worker-loop.js';
 
@@ -56,6 +59,11 @@ let updateState: AppUpdateState = {
   currentVersion: appVersion,
   message: updatesEnabled ? undefined : 'Las actualizaciones automaticas se activan en la app instalada.',
 };
+let resourceWorkerState: WorkerRuntimeState = 'stopped';
+let resourceActiveJob: ResourceActiveJob | undefined;
+const resourceMonitor = new ResourceMonitor({
+  getElectronAppMetrics: () => app.getAppMetrics(),
+});
 
 function getAssetPath(fileName: string): string {
   return path.join(__dirname, 'assets', fileName);
@@ -99,6 +107,41 @@ function normalizeApiUrl(apiUrl: string): string {
 
 function send(channel: string, payload: unknown): void {
   mainWindow?.webContents.send(channel, payload);
+}
+
+function updateResourceContextFromWorkerEvent(event: WorkerRuntimeEvent): void {
+  resourceWorkerState = event.state;
+  const hasJobContext = Boolean(event.jobId || event.buildId || event.compositionId);
+  if (hasJobContext) {
+    resourceActiveJob = {
+      jobId: event.jobId,
+      jobType: event.jobType,
+      buildId: event.buildId,
+      compositionId: event.compositionId,
+      percent: event.percent,
+      stage: event.stage,
+      message: event.message,
+    };
+  }
+  if (event.state === 'idle' || event.state === 'online' || event.state === 'stopped') {
+    resourceActiveJob = undefined;
+  }
+}
+
+function publishWorkerEvent(event: WorkerRuntimeEvent): void {
+  updateResourceContextFromWorkerEvent(event);
+  send('worker:event', event);
+}
+
+function getResourceMonitorContext() {
+  return {
+    workerState: resourceWorkerState,
+    activeJob: resourceActiveJob,
+  };
+}
+
+async function getResourceMetrics() {
+  return resourceMonitor.getLatest() || resourceMonitor.sample(getResourceMonitorContext());
 }
 
 function publishUpdateState(nextState: Partial<AppUpdateState>): AppUpdateState {
@@ -320,6 +363,9 @@ async function getStatus() {
       powerProfile: config.powerProfile,
       maxConcurrentJobs: config.maxConcurrentJobs,
       renderConcurrency: config.renderConcurrency,
+      hardwareAcceleration: config.hardwareAcceleration,
+      chromiumGl: config.chromiumGl,
+      videoBitrate: config.videoBitrate,
       localRetentionPolicy: config.localRetentionPolicy,
       localRecovery,
       worker: heartbeat.worker || heartbeat,
@@ -338,6 +384,9 @@ async function getStatus() {
       powerProfile: powerProfile.id,
       maxConcurrentJobs: powerProfile.maxConcurrentJobs,
       renderConcurrency: powerProfile.renderConcurrency,
+      hardwareAcceleration: powerProfile.hardwareAcceleration,
+      chromiumGl: powerProfile.chromiumGl,
+      videoBitrate: powerProfile.videoBitrate,
       localRetentionPolicy: normalizeLocalRetentionPolicy(config.localRetentionPolicy),
       localRecovery,
       message: getWorkerStatusMessage(error),
@@ -375,15 +424,15 @@ async function startWorker() {
   workerAbortController = new AbortController();
   void startWorkerLoop({
     signal: workerAbortController.signal,
-    onStatus: (event) => send('worker:event', event),
+    onStatus: publishWorkerEvent,
   }).catch((error) => {
-    send('worker:event', {
+    publishWorkerEvent({
       state: 'error',
       message: sanitizeLog(error instanceof Error ? error.message : String(error)),
     });
   }).finally(() => {
     workerAbortController = null;
-    send('worker:event', { state: 'stopped', message: 'Worker detenido' });
+    publishWorkerEvent({ state: 'stopped', message: 'Worker detenido' });
   });
 
   return { started: true };
@@ -423,7 +472,7 @@ async function requestQuit() {
 async function clearLink() {
   await stopWorker();
   await clearWorkerLink();
-  send('worker:event', {
+  publishWorkerEvent({
     state: 'stopped',
     message: 'Vinculacion local limpiada. Genera un codigo nuevo en SofLIA para conectar este equipo.',
   });
@@ -475,6 +524,9 @@ async function setPowerProfile(_event: Electron.IpcMainInvokeEvent, rawPowerProf
     powerProfile: powerProfile.id,
     maxConcurrentJobs: powerProfile.maxConcurrentJobs,
     renderConcurrency: powerProfile.renderConcurrency,
+    hardwareAcceleration: powerProfile.hardwareAcceleration,
+    chromiumGl: powerProfile.chromiumGl,
+    videoBitrate: powerProfile.videoBitrate,
   });
 
   if (!shouldRestart) {
@@ -482,6 +534,9 @@ async function setPowerProfile(_event: Electron.IpcMainInvokeEvent, rawPowerProf
       powerProfile: powerProfile.id,
       maxConcurrentJobs: powerProfile.maxConcurrentJobs,
       renderConcurrency: powerProfile.renderConcurrency,
+      hardwareAcceleration: powerProfile.hardwareAcceleration,
+      chromiumGl: powerProfile.chromiumGl,
+      videoBitrate: powerProfile.videoBitrate,
       restarted: false,
       message: 'Perfil de potencia guardado. Se aplicara al iniciar el worker.',
     };
@@ -493,6 +548,9 @@ async function setPowerProfile(_event: Electron.IpcMainInvokeEvent, rawPowerProf
     powerProfile: powerProfile.id,
     maxConcurrentJobs: powerProfile.maxConcurrentJobs,
     renderConcurrency: powerProfile.renderConcurrency,
+    hardwareAcceleration: powerProfile.hardwareAcceleration,
+    chromiumGl: powerProfile.chromiumGl,
+    videoBitrate: powerProfile.videoBitrate,
     restarted,
     message: restarted
       ? 'Perfil de potencia guardado y worker reiniciado.'
@@ -505,6 +563,7 @@ function isActionStarted(value: unknown): value is { started: true } {
 }
 
 ipcMain.handle('app:get-status', getStatus);
+ipcMain.handle('app:get-resource-metrics', getResourceMetrics);
 ipcMain.handle('app:get-update-status', () => updateState);
 ipcMain.handle('app:check-for-updates', checkForUpdates);
 ipcMain.handle('app:download-update', downloadUpdate);
@@ -587,6 +646,7 @@ app.whenReady().then(async () => {
   closeToTray = config.closeToTray !== false;
   createTray();
   createWindow();
+  resourceMonitor.start(getResourceMonitorContext, (snapshot) => send('app:resource-metrics', snapshot));
   void startWorkerIfConfigured();
   setTimeout(() => {
     void checkForUpdates().catch(() => {
@@ -615,5 +675,6 @@ app.on('activate', () => {
 
 app.on('before-quit', async () => {
   isQuitting = true;
+  resourceMonitor.stop();
   await stopWorker();
 });

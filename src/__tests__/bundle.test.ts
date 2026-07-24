@@ -70,6 +70,25 @@ describe('downloadAndExtractBundle', () => {
     );
   });
 
+  it('extracts a source ZIP for template builds without requiring index.html', async () => {
+    const zipBuffer = await createSourceZipBuffer();
+    const bundleHash = crypto.createHash('sha256').update(zipBuffer).digest('hex');
+
+    globalThis.fetch = (async () => new Response(new Uint8Array(zipBuffer))) as typeof fetch;
+
+    const bundleRoot = await downloadAndExtractBundle('https://example.test/template-source.zip', bundleHash, {
+      requireSha256: true,
+      requireIndex: false,
+    });
+
+    assert.equal(
+      await fsp.readFile(path.join(bundleRoot, 'courseforge-remotion-template.json'), 'utf8'),
+      JSON.stringify({ entryPoint: 'src/index.tsx' }),
+    );
+    await assert.rejects(() => fsp.access(path.join(bundleRoot, 'index.html')));
+    assert.equal(await fsp.readFile(path.join(bundleRoot, '.source-ready'), 'utf8').then(Boolean), true);
+  });
+
   it('invalidates stale ready caches that are missing index.html', async () => {
     const zipBuffer = await createZipBuffer();
     const bundleHash = crypto.createHash('sha256').update(zipBuffer).digest('hex');
