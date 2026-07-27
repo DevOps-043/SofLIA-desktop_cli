@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import JSZip from 'jszip';
@@ -87,6 +88,13 @@ export async function downloadAndExtractBundle(
 
 export async function sha256File(filePath: string): Promise<string> {
   const hash = crypto.createHash('sha256');
-  hash.update(await fsp.readFile(filePath));
+  await new Promise<void>((resolve, reject) => {
+    createReadStream(filePath)
+      .on('data', (chunk) => {
+        hash.update(chunk);
+      })
+      .on('error', reject)
+      .on('end', resolve);
+  });
   return hash.digest('hex');
 }

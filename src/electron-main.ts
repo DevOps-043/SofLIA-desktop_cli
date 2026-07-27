@@ -17,6 +17,7 @@ import type { AppUpdateState } from './shared/update-types.js';
 import type { WorkerRuntimeEvent, WorkerRuntimeState } from './shared/worker-events.js';
 import { getWorkerStartMessage, getWorkerStatusMessage } from './worker-link-state.js';
 import { startWorkerLoop } from './worker-loop.js';
+import { WorkerTelemetryService } from './worker-telemetry-service.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -64,6 +65,7 @@ let resourceActiveJob: ResourceActiveJob | undefined;
 const resourceMonitor = new ResourceMonitor({
   getElectronAppMetrics: () => app.getAppMetrics(),
 });
+const telemetryService = new WorkerTelemetryService();
 
 function getAssetPath(fileName: string): string {
   return path.join(__dirname, 'assets', fileName);
@@ -114,13 +116,18 @@ function updateResourceContextFromWorkerEvent(event: WorkerRuntimeEvent): void {
   const hasJobContext = Boolean(event.jobId || event.buildId || event.compositionId);
   if (hasJobContext) {
     resourceActiveJob = {
-      jobId: event.jobId,
-      jobType: event.jobType,
-      buildId: event.buildId,
-      compositionId: event.compositionId,
-      percent: event.percent,
-      stage: event.stage,
-      message: event.message,
+      ...resourceActiveJob,
+      jobId: event.jobId || resourceActiveJob?.jobId,
+      jobType: event.jobType || resourceActiveJob?.jobType,
+      buildId: event.buildId || resourceActiveJob?.buildId,
+      compositionId: event.compositionId || resourceActiveJob?.compositionId,
+      percent: event.percent ?? resourceActiveJob?.percent,
+      stage: event.stage || resourceActiveJob?.stage,
+      message: event.message || resourceActiveJob?.message,
+      startedAt: event.startedAt || resourceActiveJob?.startedAt,
+      finishedAt: event.finishedAt || resourceActiveJob?.finishedAt,
+      elapsedMs: event.elapsedMs ?? resourceActiveJob?.elapsedMs,
+      elapsedSeconds: event.elapsedSeconds ?? resourceActiveJob?.elapsedSeconds,
     };
   }
   if (event.state === 'idle' || event.state === 'online' || event.state === 'stopped') {
@@ -130,6 +137,7 @@ function updateResourceContextFromWorkerEvent(event: WorkerRuntimeEvent): void {
 
 function publishWorkerEvent(event: WorkerRuntimeEvent): void {
   updateResourceContextFromWorkerEvent(event);
+  telemetryService.handleWorkerEvent(event);
   send('worker:event', event);
 }
 
@@ -642,11 +650,17 @@ ipcMain.handle('app:open-external', (_event, url: string) => {
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
   configureAutoUpdates();
+  await telemetryService.initialize().catch((error) => {
+    console.error('Telemetry initialization failed', sanitizeLog(error instanceof Error ? error.message : String(error)));
+  });
   const config = await loadOptionalConfig();
   closeToTray = config.closeToTray !== false;
   createTray();
   createWindow();
-  resourceMonitor.start(getResourceMonitorContext, (snapshot) => send('app:resource-metrics', snapshot));
+  resourceMonitor.start(getResourceMonitorContext, (snapshot) => {
+    telemetryService.handleResourceSnapshot(snapshot);
+    send('app:resource-metrics', snapshot);
+  });
   void startWorkerIfConfigured();
   setTimeout(() => {
     void checkForUpdates().catch(() => {
@@ -676,5 +690,6 @@ app.on('activate', () => {
 app.on('before-quit', async () => {
   isQuitting = true;
   resourceMonitor.stop();
+  telemetryService.close();
   await stopWorker();
 });

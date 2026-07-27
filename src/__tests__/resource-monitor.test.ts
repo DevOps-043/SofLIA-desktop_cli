@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { buildProcessTree, calculateCpuPercent, ResourceMonitor } from '../resource-monitor.js';
+import { buildProcessTree, calculateCpuPercent, parseTypeperfGpuRows, ResourceMonitor } from '../resource-monitor.js';
 import type { RawGpuEngineRow, RawProcessRow } from '../resource-monitor.js';
 
 describe('resource-monitor', () => {
@@ -85,6 +85,19 @@ describe('resource-monitor', () => {
     assert.equal(snapshot.app.gpuPercent, 11);
     assert.equal(snapshot.system.gpuPercent, 32);
     assert.equal(snapshot.app.gpuUnavailableReason, undefined);
+  });
+
+  it('parses GPU rows from typeperf CSV fallback output', () => {
+    const rows = parseTypeperfGpuRows([
+      '"(PDH-CSV 4.0)","\\\\LORD\\GPU Engine(pid_10_luid_0x0_engtype_3D)\\Utilization Percentage","\\\\LORD\\GPU Engine(pid_44_luid_0x0_engtype_VideoEncode)\\Utilization Percentage"',
+      '"07/25/2026 15:14:43.506","4.500000","0.250000"',
+    ].join('\n'));
+
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0]?.pid, 10);
+    assert.equal(rows[0]?.utilizationPercent, 4.5);
+    assert.equal(rows[1]?.pid, 44);
+    assert.equal(rows[1]?.utilizationPercent, 0.25);
   });
 
   it('falls back cleanly when process tree sampling is unavailable', async () => {

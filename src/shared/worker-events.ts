@@ -26,6 +26,10 @@ export type WorkerRuntimeEvent = {
   jobTitle?: string;
   queuePosition?: number;
   queueTotal?: number;
+  startedAt?: string;
+  finishedAt?: string;
+  elapsedMs?: number;
+  elapsedSeconds?: number;
   detail?: Record<string, unknown>;
 };
 

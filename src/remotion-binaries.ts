@@ -3,6 +3,12 @@ import * as path from 'node:path';
 
 const require = createRequire(import.meta.url);
 
+function unpackAsarPath(resolvedPath: string): string | null {
+  return resolvedPath.includes('app.asar')
+    ? resolvedPath.replace('app.asar', 'app.asar.unpacked')
+    : null;
+}
+
 export function getRemotionBinariesDirectory(): string | null {
   const packageName = (() => {
     if (process.platform === 'win32' && process.arch === 'x64') return '@remotion/compositor-win32-x64-msvc';
@@ -15,7 +21,33 @@ export function getRemotionBinariesDirectory(): string | null {
 
   if (!packageName) return null;
   const compositorPackageDir = path.dirname(require.resolve(`${packageName}/package.json`));
-  return compositorPackageDir.includes('app.asar')
-    ? compositorPackageDir.replace('app.asar', 'app.asar.unpacked')
-    : null;
+  return unpackAsarPath(compositorPackageDir);
+}
+
+export function getEsbuildBinaryPath(): string | null {
+  const packageName = (() => {
+    if (process.platform === 'win32' && process.arch === 'x64') return '@esbuild/win32-x64';
+    if (process.platform === 'win32' && process.arch === 'ia32') return '@esbuild/win32-ia32';
+    if (process.platform === 'win32' && process.arch === 'arm64') return '@esbuild/win32-arm64';
+    if (process.platform === 'darwin' && process.arch === 'x64') return '@esbuild/darwin-x64';
+    if (process.platform === 'darwin' && process.arch === 'arm64') return '@esbuild/darwin-arm64';
+    if (process.platform === 'linux' && process.arch === 'x64') return '@esbuild/linux-x64';
+    if (process.platform === 'linux' && process.arch === 'arm64') return '@esbuild/linux-arm64';
+    if (process.platform === 'linux' && process.arch === 'ia32') return '@esbuild/linux-ia32';
+    if (process.platform === 'linux' && process.arch === 'arm') return '@esbuild/linux-arm';
+    return null;
+  })();
+
+  if (!packageName) return null;
+  const packageDir = path.dirname(require.resolve(`${packageName}/package.json`));
+  const unpackedPackageDir = unpackAsarPath(packageDir);
+  if (!unpackedPackageDir) return null;
+  return path.join(unpackedPackageDir, process.platform === 'win32' ? 'esbuild.exe' : 'bin/esbuild');
+}
+
+export function configureNativeBinaryPaths(): void {
+  const esbuildBinaryPath = getEsbuildBinaryPath();
+  if (esbuildBinaryPath) {
+    process.env.ESBUILD_BINARY_PATH = esbuildBinaryPath;
+  }
 }

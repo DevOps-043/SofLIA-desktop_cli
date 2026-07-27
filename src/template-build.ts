@@ -2,7 +2,6 @@ import crypto from 'node:crypto';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bundle } from '@remotion/bundler';
 import { ensureBrowser, selectComposition } from '@remotion/renderer';
 import JSZip from 'jszip';
 import type { ClaimedTemplateBuildJob, SofliaWorkerApiClient } from './api-client.js';
@@ -11,7 +10,7 @@ import type { LocalCleanupPolicy } from './local-job-state.js';
 import type { LocalJobStore } from './local-job-store.js';
 import { getWorkspaceDir } from './paths.js';
 import { RecoverableJobError } from './recoverable-job-error.js';
-import { getRemotionBinariesDirectory } from './remotion-binaries.js';
+import { configureNativeBinaryPaths, getRemotionBinariesDirectory } from './remotion-binaries.js';
 import type { RenderProgressEvent } from './shared/worker-events.js';
 
 type TemplateManifest = {
@@ -164,6 +163,7 @@ export async function buildTemplateJob(
   job: ClaimedTemplateBuildJob,
   options: BuildTemplateJobOptions = {},
 ): Promise<void> {
+  configureNativeBinaryPaths();
   const binariesDirectory = getRemotionBinariesDirectory();
   await reportProgress(client, job, 10, 'Descargando ZIP fuente de plantilla', 'template_source_download', options.onProgress, {
     buildId: job.buildId,
@@ -189,6 +189,7 @@ export async function buildTemplateJob(
     outputDirectory: outDir,
     exportMode: job.exportMode,
   });
+  const { bundle } = await import('@remotion/bundler');
   const serveUrl = await bundle({
     entryPoint,
     outDir,

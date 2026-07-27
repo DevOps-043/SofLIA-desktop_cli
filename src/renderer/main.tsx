@@ -131,31 +131,60 @@ function getDetailEntries(detail?: Record<string, unknown>): Array<{ label: stri
     buildId: 'Build ID',
     bundleHash: 'Bundle SHA-256',
     bundleRoot: 'Carpeta fuente',
+    bundleType: 'Tipo de bundle',
     defaultProps: 'Props default',
+    downloadedBytes: 'Descargado',
+    durationInFrames: 'Frames',
+    durationSeconds: 'Duracion',
+    elapsedMs: 'Tiempo fase',
+    encodedDoneIn: 'Encoding terminado en',
+    encodedFrames: 'Frames codificados',
     entryPoint: 'Entry point',
     exportMode: 'Modo export',
+    fps: 'FPS',
+    frameCount: 'Frames totales',
+    height: 'Alto',
     manifest: 'Manifest',
     outputDirectory: 'Carpeta de salida',
     outputStoragePath: 'Destino storage',
     hardwareAcceleration: 'GPU encoding',
     chromiumGl: 'Chromium GL',
     maxConcurrentJobs: 'Capacidad',
+    parallelEncoding: 'Encoding paralelo',
+    percent: 'Progreso',
     propsHash: 'Props SHA-256',
     powerProfile: 'Perfil',
+    progress: 'Progreso interno',
+    renderEstimatedTime: 'ETA render',
     renderConcurrency: 'Concurrencia render',
+    renderedDoneIn: 'Render terminado en',
+    renderedFrames: 'Frames renderizados',
+    requestedConcurrency: 'Concurrencia solicitada',
+    resolvedConcurrency: 'Concurrencia real',
     serveUrl: 'Serve URL',
     sizeBytes: 'Tamano ZIP',
     source: 'Fuente',
+    stitchStage: 'Fase stitch',
     templateVersionId: 'Version ID',
+    totalBytes: 'Tamano total',
+    totalElapsedMs: 'Tiempo total',
+    uploadMode: 'Modo subida',
     videoBitrate: 'Video bitrate',
+    width: 'Ancho',
   };
   return Object.entries(detail)
     .filter(([, value]) => value !== undefined && value !== null && formatDetailValue(value) !== '')
     .map(([key, value]) => ({
       label: labels[key] || key,
-      value: key === 'sizeBytes' && typeof value === 'number'
-        ? `${(value / 1024).toFixed(1)} KB`
-        : formatDetailValue(value),
+      value: (key === 'sizeBytes' || key.endsWith('Bytes')) && typeof value === 'number'
+        ? formatBytes(value)
+        : key.endsWith('Ms') && typeof value === 'number'
+          ? formatElapsedTime(value)
+          : (key === 'percent' || key === 'progress') && typeof value === 'number'
+            ? key === 'progress' ? `${Math.round(value * 100)}%` : `${value}%`
+            : key.endsWith('Seconds') && typeof value === 'number'
+              ? `${value}s`
+              : formatDetailValue(value),
     }));
 }
 
@@ -212,6 +241,29 @@ function formatPercent(value = 0): string {
   return `${Math.max(0, Math.min(100, value)).toFixed(value >= 10 ? 0 : 1)}%`;
 }
 
+function formatElapsedTime(valueMs = 0): string {
+  const totalSeconds = Math.max(0, Math.floor(valueMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function getElapsedMsForJob(job: Pick<WorkerRuntimeEvent, 'startedAt' | 'finishedAt' | 'elapsedMs'> | null | undefined, nowMs: number): number {
+  if (!job) return 0;
+  if (!job.startedAt) return job.elapsedMs || 0;
+  const startedAtMs = Date.parse(job.startedAt);
+  if (!Number.isFinite(startedAtMs)) return job.elapsedMs || 0;
+  const finishedAtMs = job.finishedAt ? Date.parse(job.finishedAt) : undefined;
+  if (finishedAtMs && Number.isFinite(finishedAtMs)) {
+    return Math.max(0, finishedAtMs - startedAtMs);
+  }
+  return Math.max(job.elapsedMs || 0, nowMs - startedAtMs);
+}
+
 function getProgressWidth(value = 0): string {
   return `${Math.max(0, Math.min(100, value))}%`;
 }
@@ -240,6 +292,16 @@ function mergeWorkerEvent(current: WorkerRuntimeEvent | null, event: WorkerRunti
   return {
     ...current,
     ...event,
+    jobType: event.jobType || current.jobType,
+    buildId: event.buildId || current.buildId,
+    templateVersionId: event.templateVersionId || current.templateVersionId,
+    compositionId: event.compositionId || current.compositionId,
+    percent: event.percent ?? current.percent,
+    stage: event.stage || current.stage,
+    startedAt: event.startedAt || current.startedAt,
+    finishedAt: event.finishedAt || current.finishedAt,
+    elapsedMs: event.elapsedMs ?? current.elapsedMs,
+    elapsedSeconds: event.elapsedSeconds ?? current.elapsedSeconds,
     detail: {
       ...(current.detail || {}),
       ...(event.detail || {}),
@@ -325,7 +387,7 @@ function ResourceHistory({ history }: { history: ResourceMetricsSnapshot[] }) {
   );
 }
 
-function ResourcesTab({ metrics, history }: { metrics: ResourceMetricsSnapshot | null; history: ResourceMetricsSnapshot[] }) {
+function ResourcesTab({ metrics, history, nowMs }: { metrics: ResourceMetricsSnapshot | null; history: ResourceMetricsSnapshot[]; nowMs: number }) {
   const activeJob = metrics?.activeJob;
   const systemMemoryPercent = metrics?.system.memoryTotalBytes
     ? (metrics.system.memoryUsedBytes / metrics.system.memoryTotalBytes) * 100
@@ -333,6 +395,7 @@ function ResourcesTab({ metrics, history }: { metrics: ResourceMetricsSnapshot |
   const topProcesses = (metrics?.processes || []).slice(0, 8);
   const sampledAt = metrics?.sampledAt ? new Date(metrics.sampledAt).toLocaleTimeString() : 'Sin muestra';
   const jobPercent = Math.max(0, Math.min(100, activeJob?.percent ?? 0));
+  const activeJobElapsed = formatElapsedTime(getElapsedMsForJob(activeJob, nowMs));
 
   return (
     <section className="resources-layout">
@@ -424,6 +487,10 @@ function ResourcesTab({ metrics, history }: { metrics: ResourceMetricsSnapshot |
                 <strong>{activeJob?.stage ? activeJob.stage.replace(/_/g, ' ') : 'En reposo'}</strong>
               </div>
               <div>
+                <span>Tiempo</span>
+                <strong>{activeJob ? activeJobElapsed : '0:00'}</strong>
+              </div>
+              <div>
                 <span>Composicion</span>
                 <strong>{activeJob?.compositionId || 'Sin job activo'}</strong>
               </div>
@@ -505,6 +572,7 @@ function App() {
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [updateState, setUpdateState] = useState<AppUpdateState>({ status: 'idle', currentVersion: APP_DISPLAY_VERSION });
   const [currentJob, setCurrentJob] = useState<WorkerRuntimeEvent | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [resourceMetrics, setResourceMetrics] = useState<ResourceMetricsSnapshot | null>(null);
   const [resourceHistory, setResourceHistory] = useState<ResourceMetricsSnapshot[]>([]);
   const [activeTab, setActiveTab] = useState<AppTab>('worker');
@@ -537,6 +605,13 @@ function App() {
     window.localStorage.setItem('soflia-theme', theme);
     void window.sofliaWorker.setTheme(theme);
   }, [theme]);
+
+  useEffect(() => {
+    const hasActiveTimer = Boolean(currentJob?.startedAt || resourceMetrics?.activeJob?.startedAt);
+    if (!hasActiveTimer) return undefined;
+    const interval = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [currentJob?.startedAt, resourceMetrics?.activeJob?.startedAt]);
 
   useEffect(() => {
     const removeWorkerListener = window.sofliaWorker.onWorkerEvent((event) => {
@@ -608,6 +683,7 @@ function App() {
       : 'Vincula este equipo con el codigo temporal generado desde SofLIA.';
   const currentJobPercent = Math.max(0, Math.min(100, currentJob?.percent ?? 0));
   const currentJobStage = currentJob?.stage ? currentJob.stage.replace(/_/g, ' ') : 'Esperando';
+  const currentJobElapsed = formatElapsedTime(getElapsedMsForJob(currentJob, nowMs));
   const currentJobScope = currentJob ? getEventScope(currentJob) : 'worker';
   const currentJobDetails = getDetailEntries(currentJob?.detail);
   const bundleLogs = logs.filter((line) => line.scope === 'bundle');
@@ -817,6 +893,10 @@ function App() {
                       <strong>{currentJob ? currentJobStage : 'Esperando claim-next'}</strong>
                     </div>
                     <div>
+                      <span>Tiempo</span>
+                      <strong>{currentJob ? currentJobElapsed : '0:00'}</strong>
+                    </div>
+                    <div>
                       <span>Composicion</span>
                       <strong>{currentJob?.compositionId || 'Sin job activo'}</strong>
                     </div>
@@ -880,7 +960,7 @@ function App() {
             </section>
           </section>
         ) : activeTab === 'resources' ? (
-          <ResourcesTab metrics={resourceMetrics} history={resourceHistory} />
+          <ResourcesTab metrics={resourceMetrics} history={resourceHistory} nowMs={nowMs} />
         ) : (
           <section className="options-layout">
             <section className="panel power-panel">

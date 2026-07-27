@@ -1,6 +1,6 @@
 {
   "name": "soflia-engine-render-worker",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "desktopName": "soflia-engine-render-worker",
   "author": {
@@ -36,6 +36,7 @@
     ],
     "asar": true,
     "asarUnpack": [
+      "node_modules/@esbuild/**/*",
       "node_modules/@remotion/compositor-*/*"
     ],
     "win": {

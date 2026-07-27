@@ -1,4 +1,9 @@
 import { sanitizeLog } from './logging.js';
+import type {
+  WorkerTelemetryFinishPayload,
+  WorkerTelemetryRunPayload,
+  WorkerTelemetrySamplePayload,
+} from './shared/worker-telemetry.js';
 
 export interface ClaimedRenderJob {
   jobType?: 'render';
@@ -169,6 +174,30 @@ export class SofliaWorkerApiClient {
     stage: string;
   }) {
     return this.post(`/api/v1/production/remotion/workers/jobs/${encodeURIComponent(jobId)}/fail`, input);
+  }
+
+  async startTelemetryRun(jobId: string, input: WorkerTelemetryRunPayload): Promise<{ runId?: string }> {
+    return this.post(
+      `/api/v1/production/remotion/workers/jobs/${encodeURIComponent(jobId)}/telemetry/runs`,
+      input,
+    );
+  }
+
+  async sendTelemetrySamples(jobId: string, localRunId: string, input: {
+    remoteRunId?: string;
+    samples: WorkerTelemetrySamplePayload[];
+  }): Promise<{ accepted: number }> {
+    return this.post(
+      `/api/v1/production/remotion/workers/jobs/${encodeURIComponent(jobId)}/telemetry/runs/${encodeURIComponent(localRunId)}/samples`,
+      input,
+    );
+  }
+
+  async finishTelemetryRun(jobId: string, localRunId: string, input: WorkerTelemetryFinishPayload): Promise<{ runId?: string }> {
+    return this.post(
+      `/api/v1/production/remotion/workers/jobs/${encodeURIComponent(jobId)}/telemetry/runs/${encodeURIComponent(localRunId)}/finish`,
+      input,
+    );
   }
 
   private async post<T = Record<string, unknown>>(

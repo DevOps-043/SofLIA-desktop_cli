@@ -1,3 +1,4 @@
+import { createReadStream } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import type { LocalJobRecord, LocalRecoverySummary } from './local-job-state.js';
 import { LocalArtifactRetentionService } from './local-artifact-retention.js';
@@ -34,6 +35,10 @@ export interface RecoveryCoordinatorEvents {
     detail?: Record<string, unknown>;
   }) => void;
 }
+
+type StreamingRequestInit = RequestInit & {
+  duplex: 'half';
+};
 
 export class RecoveryCoordinator {
   private readonly retention: LocalArtifactRetentionService;
@@ -85,12 +90,17 @@ export class RecoveryCoordinator {
           jobType: job.jobType,
           outputStoragePath: job.outputStoragePath,
         });
-        const body = await fsp.readFile(job.artifactPath);
-        const response = await fetch(upload.uploadUrl, {
+        const stat = await fsp.stat(job.artifactPath);
+        const uploadRequest: StreamingRequestInit = {
           method: 'PUT',
-          headers: { 'content-type': contentTypeForJob(job.jobType) },
-          body,
-        });
+          headers: {
+            'content-type': contentTypeForJob(job.jobType),
+            'content-length': String(stat.size),
+          },
+          body: createReadStream(job.artifactPath) as unknown as BodyInit,
+          duplex: 'half',
+        };
+        const response = await fetch(upload.uploadUrl, uploadRequest);
         if (!response.ok) throw new Error(`RECOVERY_UPLOAD_FAILED: HTTP ${response.status}`);
         this.store.markUploadedPendingComplete(job.jobId);
       }

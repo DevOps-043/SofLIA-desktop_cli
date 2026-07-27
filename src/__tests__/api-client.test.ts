@@ -242,4 +242,79 @@ describe('SofliaWorkerApiClient', () => {
     assert.equal(jobs[0]?.jobType, 'template_preview');
     assert.equal(jobs[1]?.jobId, 'preview-2');
   });
+
+  it('sends telemetry run lifecycle payloads through the worker API', async () => {
+    const requests: Array<{ url: string; body: any }> = [];
+
+    globalThis.fetch = (async (url, init) => {
+      requests.push({
+        url: String(url),
+        body: JSON.parse(String(init?.body || '{}')) as Record<string, unknown>,
+      });
+      return new Response(JSON.stringify({ runId: 'remote-run-1', accepted: 1 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const client = new SofliaWorkerApiClient('http://localhost:4000', 'swk_secret');
+    await client.startTelemetryRun('job-1', {
+      localRunId: 'run-1',
+      jobId: 'job-1',
+      jobType: 'render',
+      status: 'running',
+      startedAt: '2026-07-25T20:00:00.000Z',
+      config: { powerProfile: 'balanced', renderConcurrency: 2 },
+      hardware: {
+        platform: 'win32',
+        arch: 'x64',
+        cpuLogicalThreads: 8,
+        memoryTotalBytes: 16,
+        gpuAdapters: [],
+      },
+    });
+    await client.sendTelemetrySamples('job-1', 'run-1', {
+      samples: [{
+        sampledAt: '2026-07-25T20:00:02.000Z',
+        workerState: 'rendering',
+        appCpuPercent: 10,
+        appGpuPercent: 2,
+        appMemoryBytes: 100,
+        appProcessCount: 2,
+        systemCpuPercent: 30,
+        systemGpuPercent: 5,
+        systemMemoryUsedBytes: 200,
+        systemMemoryTotalBytes: 1000,
+        systemCpuCount: 8,
+        topProcesses: [],
+      }],
+    });
+    await client.finishTelemetryRun('job-1', 'run-1', {
+      localRunId: 'run-1',
+      status: 'completed',
+      finishedAt: '2026-07-25T20:01:00.000Z',
+      elapsedMs: 60000,
+      summary: {
+        sampleCount: 1,
+        avgAppCpuPercent: 10,
+        maxAppCpuPercent: 10,
+        avgAppGpuPercent: 2,
+        maxAppGpuPercent: 2,
+        avgAppMemoryBytes: 100,
+        maxAppMemoryBytes: 100,
+        avgSystemCpuPercent: 30,
+        maxSystemCpuPercent: 30,
+        avgSystemGpuPercent: 5,
+        maxSystemGpuPercent: 5,
+        maxSystemMemoryUsedBytes: 200,
+      },
+    });
+
+    assert.equal(requests[0]?.url, 'http://localhost:4000/api/v1/production/remotion/workers/jobs/job-1/telemetry/runs');
+    assert.equal(requests[1]?.url, 'http://localhost:4000/api/v1/production/remotion/workers/jobs/job-1/telemetry/runs/run-1/samples');
+    assert.equal(requests[2]?.url, 'http://localhost:4000/api/v1/production/remotion/workers/jobs/job-1/telemetry/runs/run-1/finish');
+    assert.equal(requests[0]?.body.localRunId, 'run-1');
+    assert.equal(requests[1]?.body.samples[0].appCpuPercent, 10);
+    assert.equal(requests[2]?.body.elapsedMs, 60000);
+  });
 });

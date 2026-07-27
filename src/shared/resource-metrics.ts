@@ -2,7 +2,7 @@ import type { WorkerRuntimeEvent, WorkerRuntimeState } from './worker-events.js'
 
 export type ResourceActiveJob = Partial<Pick<
   WorkerRuntimeEvent,
-  'jobId' | 'jobType' | 'buildId' | 'compositionId' | 'percent' | 'stage' | 'message'
+  'jobId' | 'jobType' | 'buildId' | 'compositionId' | 'percent' | 'stage' | 'message' | 'startedAt' | 'finishedAt' | 'elapsedMs' | 'elapsedSeconds'
 >>;
 
 export type ResourceProcessMetric = {

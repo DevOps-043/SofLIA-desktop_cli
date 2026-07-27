@@ -154,6 +154,58 @@ function normalizeWindowsGpuEngineRow(value: unknown): RawGpuEngineRow | null {
   };
 }
 
+function parseCsvLine(line: string): string[] {
+  const values: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    const next = line[index + 1];
+    if (char === '"' && next === '"') {
+      current += '"';
+      index += 1;
+      continue;
+    }
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+    if (char === ',' && !inQuotes) {
+      values.push(current);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  values.push(current);
+  return values;
+}
+
+export function parseTypeperfGpuRows(stdout: string): RawGpuEngineRow[] {
+  const lines = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('"'));
+  if (lines.length < 2) return [];
+
+  const headers = parseCsvLine(lines[0] || '');
+  const values = parseCsvLine(lines[1] || '');
+  const rows: RawGpuEngineRow[] = [];
+  for (let index = 1; index < headers.length; index += 1) {
+    const header = headers[index] || '';
+    const value = values[index] || '';
+    const instanceMatch = header.match(/GPU Engine\((.+?)\)\\Utilization Percentage/i);
+    if (!instanceMatch) continue;
+    const utilizationPercent = Number(value.replace(',', '.'));
+    const normalized = normalizeWindowsGpuEngineRow({
+      InstanceName: instanceMatch[1],
+      CookedValue: Number.isFinite(utilizationPercent) ? utilizationPercent : 0,
+    });
+    if (normalized) rows.push(normalized);
+  }
+  return rows;
+}
+
 export async function getWindowsProcessRows(): Promise<RawProcessRow[]> {
   const script = [
     "$ErrorActionPreference='Stop'",
@@ -179,7 +231,7 @@ export async function getWindowsProcessRows(): Promise<RawProcessRow[]> {
   return rows.map(normalizeWindowsProcessRow).filter((row): row is RawProcessRow => Boolean(row));
 }
 
-export async function getWindowsGpuEngineRows(): Promise<RawGpuEngineRow[]> {
+async function getWindowsGpuEngineRowsFromGetCounter(): Promise<RawGpuEngineRow[]> {
   const script = [
     "$ErrorActionPreference='Stop'",
     "Get-Counter '\\GPU Engine(*)\\Utilization Percentage' | Select-Object -ExpandProperty CounterSamples | Select-Object InstanceName,CookedValue | ConvertTo-Json -Compress",
@@ -202,6 +254,34 @@ export async function getWindowsGpuEngineRows(): Promise<RawGpuEngineRow[]> {
   const parsed = JSON.parse(stdout || '[]') as unknown;
   const rows = Array.isArray(parsed) ? parsed : [parsed];
   return rows.map(normalizeWindowsGpuEngineRow).filter((row): row is RawGpuEngineRow => Boolean(row));
+}
+
+async function getWindowsGpuEngineRowsFromTypeperf(): Promise<RawGpuEngineRow[]> {
+  const stdout = await new Promise<string>((resolve, reject) => {
+    execFile(
+      'typeperf.exe',
+      ['\\GPU Engine(*)\\Utilization Percentage', '-sc', '1'],
+      { timeout: 2500, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+      (error, output) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(output);
+      },
+    );
+  });
+  return parseTypeperfGpuRows(stdout);
+}
+
+export async function getWindowsGpuEngineRows(): Promise<RawGpuEngineRow[]> {
+  try {
+    const rows = await getWindowsGpuEngineRowsFromGetCounter();
+    if (rows.length > 0) return rows;
+  } catch {
+    // typeperf below covers systems where Get-Counter is unavailable or localized oddly.
+  }
+  return getWindowsGpuEngineRowsFromTypeperf();
 }
 
 function getSystemCpuPercent(previous: CpuTimesSample | undefined, current: CpuTimesSample): number {

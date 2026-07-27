@@ -109,11 +109,25 @@ export async function startWorkerLoop(
 
   async function processClaimedJob(job: ClaimedJob): Promise<void> {
     const claimedJobType = job.jobType;
+    const jobType = job.jobType === 'template_build' ? 'template_build' : job.jobType === 'template_preview' ? 'template_preview' : 'render';
+    const startedAtMs = Date.now();
+    const startedAt = new Date(startedAtMs).toISOString();
+    const withTiming = (event: WorkerRuntimeEvent, finished = false): WorkerRuntimeEvent => {
+      const now = Date.now();
+      const elapsedMs = Math.max(0, now - startedAtMs);
+      return {
+        ...event,
+        startedAt,
+        finishedAt: finished ? new Date(now).toISOString() : event.finishedAt,
+        elapsedMs,
+        elapsedSeconds: Math.floor(elapsedMs / 1000),
+      };
+    };
     try {
-      emit({
+      emit(withTiming({
         state: 'claiming',
         message: 'Job reclamado',
-        jobType: job.jobType === 'template_build' ? 'template_build' : job.jobType === 'template_preview' ? 'template_preview' : 'render',
+        jobType,
         jobId: job.jobId,
         buildId: job.jobType === 'template_build' || job.jobType === 'template_preview' ? job.buildId : undefined,
         templateVersionId: job.jobType === 'template_build' || job.jobType === 'template_preview' ? job.templateVersionId : undefined,
@@ -141,24 +155,24 @@ export async function startWorkerLoop(
               propsHash: job.propsHash,
               outputStoragePath: job.outputStoragePath,
             },
-      });
+      }));
       log('Job reclamado automaticamente', {
         jobId: job.jobId,
         compositionId: job.compositionId,
         bundleHash: job.bundleHash,
         propsHash: job.jobType === 'template_build' ? undefined : job.propsHash,
       });
-      emit({
+      emit(withTiming({
         state: 'rendering',
         message: job.jobType === 'template_build' ? 'Compilando plantilla' : job.jobType === 'template_preview' ? 'Generando preview de plantilla' : 'Renderizando video',
-        jobType: job.jobType === 'template_build' ? 'template_build' : job.jobType === 'template_preview' ? 'template_preview' : 'render',
+        jobType,
         jobId: job.jobId,
         buildId: job.jobType === 'template_build' || job.jobType === 'template_preview' ? job.buildId : undefined,
         templateVersionId: job.jobType === 'template_build' || job.jobType === 'template_preview' ? job.templateVersionId : undefined,
         compositionId: job.compositionId,
         percent: 0,
         stage: job.jobType === 'template_build' ? 'template_build_start' : job.jobType === 'template_preview' ? 'template_preview_start' : 'render_start',
-      });
+      }));
 
       const isTemplateBuild = job.jobType === 'template_build';
       const isTemplatePreview = job.jobType === 'template_preview';
@@ -167,10 +181,10 @@ export async function startWorkerLoop(
           localJobStore: localJobStore || undefined,
           localRetentionPolicy: config.localRetentionPolicy,
           onProgress: (progress) => {
-            emit({
+            emit(withTiming({
               state: 'rendering',
               ...progress,
-            });
+            }));
           },
         });
       } else if (isTemplatePreview) {
@@ -178,10 +192,10 @@ export async function startWorkerLoop(
           localJobStore: localJobStore || undefined,
           localRetentionPolicy: config.localRetentionPolicy,
           onProgress: (progress) => {
-            emit({
+            emit(withTiming({
               state: 'rendering',
               ...progress,
-            });
+            }));
           },
         });
       } else {
@@ -193,16 +207,16 @@ export async function startWorkerLoop(
           localJobStore: localJobStore || undefined,
           localRetentionPolicy: config.localRetentionPolicy,
           onProgress: (progress) => {
-            emit({
+            emit(withTiming({
               state: 'rendering',
               ...progress,
-            });
+            }));
           },
         });
       }
 
       log(isTemplateBuild ? 'Build de plantilla completado' : isTemplatePreview ? 'Preview de plantilla completado' : 'Render completado', { jobId: job.jobId });
-      emit({
+      emit(withTiming({
         state: 'completed',
         message: isTemplateBuild ? 'Build de plantilla completado' : isTemplatePreview ? 'Preview de plantilla completado' : 'Render completado',
         jobType: isTemplateBuild ? 'template_build' : isTemplatePreview ? 'template_preview' : 'render',
@@ -212,21 +226,33 @@ export async function startWorkerLoop(
         compositionId: job.compositionId,
         percent: 100,
         stage: 'complete',
-      });
+      }, true));
     } catch (error) {
       const message = sanitizeLog(error instanceof Error ? error.message : String(error));
       logError('Error procesando job:', error);
       if (isRecoverableJobError(error)) {
-        emit({
+        emit(withTiming({
           state: error.stage === 'upload' ? 'upload_pending' : 'confirm_pending',
           message: error.message,
           jobId: job.jobId,
-          jobType: claimedJobType === 'template_build' ? 'template_build' : claimedJobType === 'template_preview' ? 'template_preview' : 'render',
+          jobType,
+          buildId: job.jobType === 'template_build' || job.jobType === 'template_preview' ? job.buildId : undefined,
+          templateVersionId: job.jobType === 'template_build' || job.jobType === 'template_preview' ? job.templateVersionId : undefined,
+          compositionId: job.compositionId,
           stage: error.stage,
-        });
+        }, true));
         return;
       }
-      emit({ state: 'error', message, jobId: job.jobId });
+      emit(withTiming({
+        state: 'error',
+        message,
+        jobId: job.jobId,
+        jobType,
+        buildId: job.jobType === 'template_build' || job.jobType === 'template_preview' ? job.buildId : undefined,
+        templateVersionId: job.jobType === 'template_build' || job.jobType === 'template_preview' ? job.templateVersionId : undefined,
+        compositionId: job.compositionId,
+        stage: jobType === 'template_build' ? 'template_build' : jobType === 'template_preview' ? 'template_preview' : 'render',
+      }, true));
       try {
         localJobStore?.markNonRecoverableFailure(
           job.jobId,
