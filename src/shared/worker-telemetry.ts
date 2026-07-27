@@ -91,6 +91,7 @@ export type WorkerTelemetrySamplePayload = {
   systemMemoryTotalBytes: number;
   systemCpuCount: number;
   topProcesses: WorkerTelemetryProcessSample[];
+  systemTopProcesses?: WorkerTelemetryProcessSample[];
 };
 
 export type WorkerTelemetryFinishPayload = {

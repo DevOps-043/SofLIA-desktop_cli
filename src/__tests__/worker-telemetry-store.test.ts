@@ -67,6 +67,7 @@ describe('WorkerTelemetryStore', () => {
       systemMemoryTotalBytes: 1000,
       systemCpuCount: 8,
       topProcesses: [{ pid: 10, name: 'soflia.exe', type: 'Browser', cpuPercent: 10, memoryBytes: 100 }],
+      systemTopProcesses: [{ pid: 20, name: 'chrome.exe', type: 'Process', cpuPercent: 25, memoryBytes: 500 }],
     });
     store.recordSample({
       localRunId: 'run-1',
@@ -85,6 +86,7 @@ describe('WorkerTelemetryStore', () => {
       systemMemoryTotalBytes: 1000,
       systemCpuCount: 8,
       topProcesses: [],
+      systemTopProcesses: [],
     });
 
     const summary = store.finishRun({
@@ -104,6 +106,7 @@ describe('WorkerTelemetryStore', () => {
 
     store.markRunStartSynced('run-1', 'remote-run-1');
     assert.equal(store.listPendingSamples().length, 2);
+    assert.equal(store.listPendingSamples()[0]?.systemTopProcesses?.[0]?.name, 'chrome.exe');
     store.markSamplesSynced(store.listPendingSamples().map((sample) => sample.id));
     assert.equal(store.listPendingSamples().length, 0);
     assert.equal(store.listRunsNeedingFinish()[0]?.summary.sampleCount, 2);

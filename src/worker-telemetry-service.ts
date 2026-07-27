@@ -96,7 +96,7 @@ export class WorkerTelemetryService {
       return;
     }
 
-    const activeRun = this.ensureRunForEvent(event);
+    const activeRun = this.findRunForJobId(event.jobId);
     if (!activeRun) return;
 
     if (event.state === 'rendering') {
@@ -157,20 +157,22 @@ export class WorkerTelemetryService {
         cpuPercent: processMetric.cpuPercent,
         memoryBytes: processMetric.memoryBytes,
       })),
+      systemTopProcesses: snapshot.systemProcesses.slice(0, 8).map((processMetric) => ({
+        pid: processMetric.pid,
+        parentPid: processMetric.parentPid,
+        name: processMetric.name,
+        type: processMetric.type,
+        cpuPercent: processMetric.cpuPercent,
+        memoryBytes: processMetric.memoryBytes,
+      })),
     });
     this.scheduleFlush(false);
   }
 
   private ensureRunForEvent(event: WorkerRuntimeEvent): ActiveTelemetryRun | null {
     if (!event.jobId || !this.hardwareSnapshot) return null;
-    const currentRun = this.activeRunsByJobId.get(event.jobId);
-    if (currentRun) return currentRun;
-    const openRun = this.store.getOpenRunByJobId(event.jobId);
-    if (openRun) {
-      const activeRun = { localRunId: openRun.localRunId, startedAt: openRun.startedAt };
-      this.activeRunsByJobId.set(event.jobId, activeRun);
-      return activeRun;
-    }
+    const existingRun = this.findRunForJobId(event.jobId);
+    if (existingRun) return existingRun;
 
     const startedAt = event.startedAt || new Date(this.now()).toISOString();
     const activeRun = {
@@ -195,6 +197,17 @@ export class WorkerTelemetryService {
     });
     this.activeRunsByJobId.set(event.jobId, activeRun);
     this.scheduleFlush(true);
+    return activeRun;
+  }
+
+  private findRunForJobId(jobId?: string): ActiveTelemetryRun | null {
+    if (!jobId) return null;
+    const currentRun = this.activeRunsByJobId.get(jobId);
+    if (currentRun) return currentRun;
+    const openRun = this.store.getOpenRunByJobId(jobId);
+    if (!openRun) return null;
+    const activeRun = { localRunId: openRun.localRunId, startedAt: openRun.startedAt };
+    this.activeRunsByJobId.set(jobId, activeRun);
     return activeRun;
   }
 
@@ -345,6 +358,7 @@ function toSamplePayload(sample: TelemetrySampleRecord): WorkerTelemetrySamplePa
     systemMemoryTotalBytes: sample.systemMemoryTotalBytes,
     systemCpuCount: sample.systemCpuCount,
     topProcesses: sample.topProcesses,
+    systemTopProcesses: sample.systemTopProcesses || [],
   };
 }
 

@@ -302,6 +302,11 @@ function getElectronProcessMetrics(metrics: ElectronProcessMetricLike[]): Resour
   }));
 }
 
+function sortProcessMetrics(left: ResourceProcessMetric, right: ResourceProcessMetric): number {
+  const cpuDelta = right.cpuPercent - left.cpuPercent;
+  return Math.abs(cpuDelta) > 0.01 ? cpuDelta : right.memoryBytes - left.memoryBytes;
+}
+
 function summarizeGpuRows(rows: RawGpuEngineRow[], appProcessPids: Set<number>) {
   const systemGpuPercent = clampPercent(rows.reduce((sum, row) => sum + row.utilizationPercent, 0));
   const appGpuPercent = clampPercent(rows.reduce((sum, row) => {
@@ -353,28 +358,42 @@ export class ResourceMonitor {
     const electronMetrics = this.getElectronAppMetrics?.() || [];
     const electronByPid = new Map(electronMetrics.map((metric) => [metric.pid, metric]));
     let processes: ResourceProcessMetric[] = [];
+    let systemProcesses: ResourceProcessMetric[] = [];
     let unavailableReason: string | undefined;
 
     try {
-      const processRows = this.getProcessRows ? buildProcessTree(await this.getProcessRows(this.rootPid), this.rootPid) : [];
-      if (processRows.length > 0) {
-        processes = processRows.map((row) => {
-          const currentCpu = { cpuTimeMs: row.cpuTimeMs || 0, sampledAt: sampledAtMs };
-          const cpuPercent = row.cpuTimeMs === undefined
-            ? 0
-            : calculateCpuPercent(this.previousProcessCpu.get(row.pid), currentCpu, this.cpuCount);
-          this.previousProcessCpu.set(row.pid, currentCpu);
-          const electronMetric = electronByPid.get(row.pid);
-          return {
-            pid: row.pid,
-            parentPid: row.parentPid,
-            name: row.name || electronMetric?.name || electronMetric?.serviceName || `PID ${row.pid}`,
-            type: electronMetric?.type || 'Child',
-            cpuPercent,
-            memoryBytes: Math.max(0, row.workingSetBytes || 0),
-          };
+      const allProcessRows = this.getProcessRows ? await this.getProcessRows(this.rootPid) : [];
+      const processMetricsByPid = new Map<number, ResourceProcessMetric>();
+      for (const row of allProcessRows) {
+        const currentCpu = { cpuTimeMs: row.cpuTimeMs || 0, sampledAt: sampledAtMs };
+        const cpuPercent = row.cpuTimeMs === undefined
+          ? 0
+          : calculateCpuPercent(this.previousProcessCpu.get(row.pid), currentCpu, this.cpuCount);
+        this.previousProcessCpu.set(row.pid, currentCpu);
+        const electronMetric = electronByPid.get(row.pid);
+        processMetricsByPid.set(row.pid, {
+          pid: row.pid,
+          parentPid: row.parentPid,
+          name: row.name || electronMetric?.name || electronMetric?.serviceName || `PID ${row.pid}`,
+          type: electronMetric?.type || 'Process',
+          cpuPercent,
+          memoryBytes: Math.max(0, row.workingSetBytes || 0),
         });
+      }
+
+      const processRows = buildProcessTree(allProcessRows, this.rootPid);
+      if (processRows.length > 0) {
+        processes = processRows
+          .map((row) => processMetricsByPid.get(row.pid))
+          .filter((metric): metric is ResourceProcessMetric => Boolean(metric));
       } else {
+        unavailableReason = this.platform === 'win32'
+          ? 'No se encontraron procesos descendientes del worker.'
+          : 'El arbol de procesos externo solo esta disponible en Windows para esta version.';
+      }
+      if (processMetricsByPid.size > 0) {
+        systemProcesses = [...processMetricsByPid.values()].sort(sortProcessMetrics).slice(0, 12);
+      } else if (!unavailableReason) {
         unavailableReason = this.platform === 'win32'
           ? 'No se encontraron procesos descendientes del worker.'
           : 'El arbol de procesos externo solo esta disponible en Windows para esta version.';
@@ -385,6 +404,7 @@ export class ResourceMonitor {
 
     if (processes.length === 0 && electronMetrics.length > 0) {
       processes = getElectronProcessMetrics(electronMetrics);
+      systemProcesses = processes;
     }
 
     const processPids = new Set(processes.map((metric) => metric.pid));
@@ -406,10 +426,7 @@ export class ResourceMonitor {
       gpuUnavailableReason = 'No se pudo leer el uso de GPU del sistema.';
     }
 
-    processes.sort((left, right) => {
-      const cpuDelta = right.cpuPercent - left.cpuPercent;
-      return Math.abs(cpuDelta) > 0.01 ? cpuDelta : right.memoryBytes - left.memoryBytes;
-    });
+    processes.sort(sortProcessMetrics);
 
     const appCpuPercent = clampPercent(processes.reduce((sum, metric) => sum + metric.cpuPercent, 0));
     const appMemoryBytes = processes.reduce((sum, metric) => sum + metric.memoryBytes, 0);
@@ -435,6 +452,7 @@ export class ResourceMonitor {
         unavailableReason: unavailableReason && electronMetrics.length === 0 ? unavailableReason : undefined,
       },
       processes,
+      systemProcesses,
       activeJob: context.activeJob,
     };
     this.latest = snapshot;

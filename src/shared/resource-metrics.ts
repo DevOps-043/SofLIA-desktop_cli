@@ -36,5 +36,6 @@ export type ResourceMetricsSnapshot = {
     unavailableReason?: string;
   };
   processes: ResourceProcessMetric[];
+  systemProcesses: ResourceProcessMetric[];
   activeJob?: ResourceActiveJob;
 };

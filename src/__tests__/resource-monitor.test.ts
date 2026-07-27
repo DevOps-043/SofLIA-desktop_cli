@@ -32,6 +32,7 @@ describe('resource-monitor', () => {
     let rows: RawProcessRow[] = [
       { pid: 10, name: 'soflia.exe', workingSetBytes: 100, cpuTimeMs: 1000 },
       { pid: 11, parentPid: 10, name: 'chrome.exe', workingSetBytes: 200, cpuTimeMs: 500 },
+      { pid: 20, name: 'other.exe', workingSetBytes: 400, cpuTimeMs: 1000 },
     ];
     const monitor = new ResourceMonitor({
       platform: 'win32',
@@ -49,12 +50,15 @@ describe('resource-monitor', () => {
     rows = [
       { pid: 10, name: 'soflia.exe', workingSetBytes: 150, cpuTimeMs: 2000 },
       { pid: 11, parentPid: 10, name: 'chrome.exe', workingSetBytes: 250, cpuTimeMs: 700 },
+      { pid: 20, name: 'other.exe', workingSetBytes: 500, cpuTimeMs: 3000 },
     ];
     const snapshot = await monitor.sample({ workerState: 'rendering', activeJob: { jobId: 'job-1', percent: 40 } });
 
     assert.equal(snapshot.app.cpuPercent, 60);
     assert.equal(snapshot.app.memoryBytes, 400);
     assert.equal(snapshot.app.processCount, 2);
+    assert.deepEqual(snapshot.processes.map((process) => process.pid).sort(), [10, 11]);
+    assert.equal(snapshot.systemProcesses[0]?.pid, 20);
     assert.equal(snapshot.activeJob?.jobId, 'job-1');
     assert.equal(snapshot.system.memoryUsedBytes, 750);
   });
@@ -139,5 +143,6 @@ describe('resource-monitor', () => {
     assert.equal(snapshot.app.cpuPercent, 100);
     assert.equal(snapshot.processes[0]?.cpuPercent, 100);
     assert.equal(snapshot.processes[0]?.memoryBytes, 2048);
+    assert.equal(snapshot.systemProcesses[0]?.pid, 10);
   });
 });

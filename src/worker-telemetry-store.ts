@@ -82,6 +82,7 @@ type TelemetrySampleRow = {
   system_memory_total_bytes: number;
   system_cpu_count: number;
   top_processes_json: string;
+  system_top_processes_json: string;
   synced_at: string | null;
   created_at: string;
 };
@@ -200,6 +201,7 @@ export class WorkerTelemetryStore {
         system_memory_total_bytes INTEGER NOT NULL,
         system_cpu_count INTEGER NOT NULL,
         top_processes_json TEXT NOT NULL DEFAULT '[]',
+        system_top_processes_json TEXT NOT NULL DEFAULT '[]',
         synced_at TEXT,
         created_at TEXT NOT NULL
       );
@@ -210,6 +212,7 @@ export class WorkerTelemetryStore {
       CREATE INDEX IF NOT EXISTS idx_worker_job_metric_samples_run ON worker_job_metric_samples (local_run_id, id);
       CREATE INDEX IF NOT EXISTS idx_worker_job_metric_samples_sync ON worker_job_metric_samples (synced_at, id);
     `);
+    this.ensureColumn('worker_job_metric_samples', 'system_top_processes_json', "TEXT NOT NULL DEFAULT '[]'");
   }
 
   close(): void {
@@ -337,8 +340,9 @@ export class WorkerTelemetryStore {
         local_run_id, job_id, sampled_at, worker_state, stage, progress_percent,
         app_cpu_percent, app_gpu_percent, app_memory_bytes, app_process_count,
         system_cpu_percent, system_gpu_percent, system_memory_used_bytes,
-        system_memory_total_bytes, system_cpu_count, top_processes_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        system_memory_total_bytes, system_cpu_count, top_processes_json,
+        system_top_processes_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       input.localRunId,
       input.jobId,
@@ -356,6 +360,7 @@ export class WorkerTelemetryStore {
       input.systemMemoryTotalBytes,
       input.systemCpuCount,
       JSON.stringify(input.topProcesses.slice(0, 8)),
+      JSON.stringify((input.systemTopProcesses || []).slice(0, 8)),
       new Date().toISOString(),
     );
     return Number(result.lastInsertRowid);
@@ -508,6 +513,12 @@ export class WorkerTelemetryStore {
     }
     return this.database;
   }
+
+  private ensureColumn(tableName: string, columnName: string, definition: string): void {
+    const columns = this.getDatabase().prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+    if (columns.some((column) => column.name === columnName)) return;
+    this.getDatabase().exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+  }
 }
 
 function mapRunRow(row: TelemetryRunRow): TelemetryRunRecord {
@@ -587,6 +598,7 @@ function mapSampleRow(row: TelemetrySampleRow): TelemetrySampleRecord {
     systemMemoryTotalBytes: row.system_memory_total_bytes,
     systemCpuCount: row.system_cpu_count,
     topProcesses: parseJsonArray(row.top_processes_json),
+    systemTopProcesses: parseJsonArray(row.system_top_processes_json),
   };
 }
 
