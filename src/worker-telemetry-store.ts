@@ -376,6 +376,16 @@ export class WorkerTelemetryStore {
     return row ? mapRunRow(row) : null;
   }
 
+  listOpenRuns(limit = 10): TelemetryRunRecord[] {
+    const rows = this.getDatabase().prepare(`
+      SELECT * FROM worker_job_runs
+      WHERE status = 'running' AND finished_at IS NULL
+      ORDER BY started_at DESC
+      LIMIT ?
+    `).all(limit) as TelemetryRunRow[];
+    return rows.map(mapRunRow);
+  }
+
   listRunsNeedingStart(limit = 10): TelemetryRunRecord[] {
     const rows = this.getDatabase().prepare(`
       SELECT * FROM worker_job_runs

@@ -21,6 +21,7 @@ const FLUSH_BACKOFF_MS = 30000;
 const SAMPLE_FLUSH_LIMIT = 100;
 
 type ActiveTelemetryRun = {
+  jobId: string;
   localRunId: string;
   startedAt: string;
 };
@@ -112,6 +113,7 @@ export class WorkerTelemetryService {
         stage: event.stage,
         progressPercent: event.percent,
       });
+      this.scheduleFlush(false);
       return;
     }
 
@@ -134,18 +136,17 @@ export class WorkerTelemetryService {
   }
 
   handleResourceSnapshot(snapshot: ResourceMetricsSnapshot): void {
-    if (!this.initialized || !snapshot.activeJob?.jobId) return;
-    const activeRun = this.activeRunsByJobId.get(snapshot.activeJob.jobId)
-      || this.store.getOpenRunByJobId(snapshot.activeJob.jobId);
+    if (!this.initialized) return;
+    const activeRun = this.findRunForSnapshot(snapshot);
     if (!activeRun) return;
 
     this.store.recordSample({
       localRunId: activeRun.localRunId,
-      jobId: snapshot.activeJob.jobId,
+      jobId: activeRun.jobId,
       sampledAt: snapshot.sampledAt,
       workerState: snapshot.workerState,
-      stage: snapshot.activeJob.stage,
-      progressPercent: snapshot.activeJob.percent,
+      stage: snapshot.activeJob?.stage || snapshot.workerState,
+      progressPercent: snapshot.activeJob?.percent,
       appCpuPercent: snapshot.app.cpuPercent,
       appGpuPercent: snapshot.app.gpuPercent,
       appMemoryBytes: snapshot.app.memoryBytes,
@@ -182,6 +183,7 @@ export class WorkerTelemetryService {
 
     const startedAt = event.startedAt || new Date(this.now()).toISOString();
     const activeRun = {
+      jobId: event.jobId,
       localRunId: `wjr_${randomUUID()}`,
       startedAt,
     };
@@ -212,8 +214,27 @@ export class WorkerTelemetryService {
     if (currentRun) return currentRun;
     const openRun = this.store.getOpenRunByJobId(jobId);
     if (!openRun) return null;
-    const activeRun = { localRunId: openRun.localRunId, startedAt: openRun.startedAt };
+    const activeRun = { jobId: openRun.jobId, localRunId: openRun.localRunId, startedAt: openRun.startedAt };
     this.activeRunsByJobId.set(jobId, activeRun);
+    return activeRun;
+  }
+
+  private findRunForSnapshot(snapshot: ResourceMetricsSnapshot): ActiveTelemetryRun | null {
+    const activeJobId = snapshot.activeJob?.jobId;
+    if (activeJobId) {
+      return this.activeRunsByJobId.get(activeJobId)
+        || this.findRunForJobId(activeJobId);
+    }
+
+    const activeRuns = Array.from(this.activeRunsByJobId.values());
+    if (activeRuns.length === 1) return activeRuns[0] || null;
+    if (activeRuns.length > 1) return null;
+
+    const openRuns = this.store.listOpenRuns(2);
+    if (openRuns.length !== 1 || !openRuns[0]) return null;
+    const openRun = openRuns[0];
+    const activeRun = { jobId: openRun.jobId, localRunId: openRun.localRunId, startedAt: openRun.startedAt };
+    this.activeRunsByJobId.set(openRun.jobId, activeRun);
     return activeRun;
   }
 
@@ -309,6 +330,7 @@ export class WorkerTelemetryService {
         this.store.markRunStartSynced(run.localRunId, response.runId);
       }
 
+      let sampleFlushError: unknown = null;
       const samples = this.store.listPendingSamples(SAMPLE_FLUSH_LIMIT);
       for (const sampleGroup of groupSamplesByRun(samples)) {
         const firstSample = sampleGroup[0];
@@ -316,17 +338,23 @@ export class WorkerTelemetryService {
         const run = this.store.getOpenRunByJobId(firstSample.jobId)
           || this.store.listRunsNeedingFinish(50).find((item) => item.localRunId === firstSample.localRunId)
           || this.store.listRunsNeedingStart(50).find((item) => item.localRunId === firstSample.localRunId);
-        await client.sendTelemetrySamples(firstSample.jobId, firstSample.localRunId, {
-          remoteRunId: run?.remoteRunId,
-          samples: sampleGroup.map(toSamplePayload),
-        });
-        this.store.markSamplesSynced(sampleGroup.map((sample) => sample.id));
+        try {
+          await client.sendTelemetrySamples(firstSample.jobId, firstSample.localRunId, {
+            remoteRunId: run?.remoteRunId,
+            samples: sampleGroup.map(toSamplePayload),
+          });
+          this.store.markSamplesSynced(sampleGroup.map((sample) => sample.id));
+        } catch (error) {
+          sampleFlushError ||= error;
+          if (run) this.store.markRunSyncError(run.localRunId, error);
+        }
       }
 
       for (const run of this.store.listRunsNeedingFinish(10)) {
         await client.finishTelemetryRun(run.jobId, run.localRunId, toFinishPayload(run));
         this.store.markRunFinishSynced(run.localRunId);
       }
+      if (sampleFlushError) throw sampleFlushError;
       this.nextFlushAtMs = 0;
     } catch (error) {
       const impactedRun = this.store.listRunsNeedingStart(1)[0] || this.store.listRunsNeedingFinish(1)[0];
