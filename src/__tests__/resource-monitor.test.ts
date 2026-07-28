@@ -63,6 +63,38 @@ describe('resource-monitor', () => {
     assert.equal(snapshot.system.memoryUsedBytes, 750);
   });
 
+  it('excludes idle pseudo processes from the global process sample', async () => {
+    let now = 1000;
+    let rows: RawProcessRow[] = [
+      { pid: 0, name: 'System Idle Process', workingSetBytes: 0, cpuTimeMs: 5000 },
+      { pid: 10, name: 'soflia.exe', workingSetBytes: 100, cpuTimeMs: 1000 },
+      { pid: 20, name: 'chrome.exe', workingSetBytes: 300, cpuTimeMs: 1000 },
+    ];
+    const monitor = new ResourceMonitor({
+      platform: 'win32',
+      rootPid: 10,
+      cpuCount: 2,
+      now: () => now,
+      getCpuTimes: () => ({ idleMs: now, totalMs: now * 2 }),
+      getMemoryInfo: () => ({ totalBytes: 1000, freeBytes: 250 }),
+      getProcessRows: async () => rows,
+      getGpuEngineRows: async () => [],
+    });
+
+    await monitor.sample({ workerState: 'idle' });
+    now = 2000;
+    rows = [
+      { pid: 0, name: 'System Idle Process', workingSetBytes: 0, cpuTimeMs: 10000 },
+      { pid: 10, name: 'soflia.exe', workingSetBytes: 100, cpuTimeMs: 1100 },
+      { pid: 20, name: 'chrome.exe', workingSetBytes: 300, cpuTimeMs: 2000 },
+    ];
+
+    const snapshot = await monitor.sample({ workerState: 'rendering' });
+
+    assert.equal(snapshot.systemProcesses.some((process) => process.name === 'System Idle Process'), false);
+    assert.equal(snapshot.systemProcesses[0]?.pid, 20);
+  });
+
   it('summarizes GPU usage for the whole system and SofLIA process tree', async () => {
     const rows: RawProcessRow[] = [
       { pid: 10, name: 'soflia.exe', workingSetBytes: 100, cpuTimeMs: 1000 },

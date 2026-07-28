@@ -20,6 +20,16 @@ function createStore() {
   return new WorkerTelemetryStore(path.join(tempRoot, 'state', 'worker-state.db'));
 }
 
+async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error('Timed out waiting for condition');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 describe('WorkerTelemetryService', () => {
   it('does not reopen a finished run when a late event arrives for the same job', async () => {
     const store = createStore();
@@ -79,6 +89,78 @@ describe('WorkerTelemetryService', () => {
     assert.equal(runs[0]?.status, 'completed');
     assert.equal(runs[0]?.startedAt, '2026-07-27T22:40:00.000Z');
 
+    service.close();
+  });
+
+  it('retries pending sample flushes after a transient send failure while idle', async () => {
+    const store = createStore();
+    let sendAttempts = 0;
+    const service = new WorkerTelemetryService({
+      store,
+      loadConfig: async () => ({ apiUrl: 'http://localhost:4000', token: 'token' }),
+      loadOptionalConfig: async () => ({ apiUrl: 'http://localhost:4000', token: 'token' }),
+      createClient: () => ({
+        startTelemetryRun: async () => ({ runId: 'remote-run-1' }),
+        sendTelemetrySamples: async () => {
+          sendAttempts += 1;
+          if (sendAttempts === 1) throw new Error('temporary outage');
+          return { accepted: 1 };
+        },
+        finishTelemetryRun: async () => ({ runId: 'remote-run-1' }),
+      }),
+      readHardwareSnapshot: async () => ({
+        platform: 'win32',
+        arch: 'x64',
+        cpuModel: 'Test CPU',
+        cpuLogicalThreads: 4,
+        memoryTotalBytes: 16 * 1024 * 1024 * 1024,
+        gpuAdapters: [],
+      }),
+      flushBackoffMs: 10,
+    });
+    await service.initialize();
+
+    service.handleWorkerEvent({
+      state: 'claiming',
+      message: 'Job reclamado',
+      jobId: 'job-1',
+      jobType: 'render',
+      compositionId: 'full-slides',
+      percent: 0,
+      stage: 'claim',
+      startedAt: '2026-07-27T22:40:00.000Z',
+    });
+    service.handleResourceSnapshot({
+      sampledAt: '2026-07-27T22:40:02.000Z',
+      platform: 'win32',
+      workerState: 'rendering',
+      system: {
+        cpuPercent: 80,
+        gpuPercent: 0,
+        memoryUsedBytes: 1000,
+        memoryTotalBytes: 2000,
+        cpuCount: 4,
+      },
+      app: {
+        cpuPercent: 10,
+        gpuPercent: 0,
+        memoryBytes: 500,
+        processCount: 1,
+      },
+      processes: [{ pid: 10, name: 'worker.exe', type: 'Process', cpuPercent: 10, memoryBytes: 500 }],
+      systemProcesses: [{ pid: 20, name: 'chrome.exe', type: 'Process', cpuPercent: 30, memoryBytes: 800 }],
+      activeJob: {
+        jobId: 'job-1',
+        jobType: 'render',
+        compositionId: 'full-slides',
+        percent: 42,
+        stage: 'render_frames',
+      },
+    });
+
+    await waitFor(() => sendAttempts >= 2 && store.listPendingSamples().length === 0);
+
+    assert.equal(sendAttempts, 2);
     service.close();
   });
 });

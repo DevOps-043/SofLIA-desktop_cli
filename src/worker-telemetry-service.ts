@@ -35,6 +35,7 @@ type WorkerTelemetryServiceDependencies = {
   >;
   readHardwareSnapshot?: () => Promise<WorkerHardwareSnapshot>;
   now?: () => number;
+  flushBackoffMs?: number;
 };
 
 export class WorkerTelemetryService {
@@ -44,11 +45,14 @@ export class WorkerTelemetryService {
   private readonly createClient: NonNullable<WorkerTelemetryServiceDependencies['createClient']>;
   private readonly readHardwareSnapshot: () => Promise<WorkerHardwareSnapshot>;
   private readonly now: () => number;
+  private readonly flushBackoffMs: number;
   private hardwareSnapshot: WorkerHardwareSnapshot | null = null;
   private configSnapshot: WorkerTelemetryConfigSnapshot = {};
   private activeRunsByJobId = new Map<string, ActiveTelemetryRun>();
   private initialized = false;
   private flushPromise: Promise<void> | null = null;
+  private flushRequestedAfterCurrent = false;
+  private retryTimer: NodeJS.Timeout | null = null;
   private nextFlushAtMs = 0;
 
   constructor(dependencies: WorkerTelemetryServiceDependencies = {}) {
@@ -58,6 +62,7 @@ export class WorkerTelemetryService {
     this.createClient = dependencies.createClient || ((apiUrl, token) => new SofliaWorkerApiClient(apiUrl, token));
     this.readHardwareSnapshot = dependencies.readHardwareSnapshot || readWorkerHardwareSnapshot;
     this.now = dependencies.now || Date.now;
+    this.flushBackoffMs = Math.max(1, dependencies.flushBackoffMs ?? FLUSH_BACKOFF_MS);
   }
 
   async initialize(): Promise<void> {
@@ -69,6 +74,7 @@ export class WorkerTelemetryService {
   }
 
   close(): void {
+    this.clearRetryTimer();
     if (this.initialized) {
       this.store.markOpenRunsInterrupted(new Date(this.now()).toISOString());
     }
@@ -248,11 +254,44 @@ export class WorkerTelemetryService {
   }
 
   private scheduleFlush(force: boolean): void {
-    if (this.flushPromise) return;
-    if (!force && this.now() < this.nextFlushAtMs) return;
+    if (force) this.clearRetryTimer();
+    if (this.flushPromise) {
+      this.flushRequestedAfterCurrent = true;
+      return;
+    }
+    if (!force && this.now() < this.nextFlushAtMs) {
+      this.scheduleRetryTimer();
+      return;
+    }
     this.flushPromise = this.flushPending().finally(() => {
       this.flushPromise = null;
+      if (this.flushRequestedAfterCurrent) {
+        this.flushRequestedAfterCurrent = false;
+        this.scheduleFlush(true);
+        return;
+      }
+      this.scheduleRetryTimer();
     });
+  }
+
+  private scheduleRetryTimer(): void {
+    if (!this.initialized || this.retryTimer || this.nextFlushAtMs <= 0) return;
+    const delayMs = this.nextFlushAtMs - this.now();
+    if (delayMs <= 0) {
+      this.scheduleFlush(true);
+      return;
+    }
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.scheduleFlush(true);
+    }, delayMs);
+    this.retryTimer.unref?.();
+  }
+
+  private clearRetryTimer(): void {
+    if (!this.retryTimer) return;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = null;
   }
 
   private async flushPending(): Promise<void> {
@@ -292,7 +331,7 @@ export class WorkerTelemetryService {
     } catch (error) {
       const impactedRun = this.store.listRunsNeedingStart(1)[0] || this.store.listRunsNeedingFinish(1)[0];
       if (impactedRun) this.store.markRunSyncError(impactedRun.localRunId, error);
-      this.nextFlushAtMs = this.now() + FLUSH_BACKOFF_MS;
+      this.nextFlushAtMs = this.now() + this.flushBackoffMs;
     }
   }
 }

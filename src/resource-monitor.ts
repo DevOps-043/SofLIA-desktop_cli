@@ -307,6 +307,10 @@ function sortProcessMetrics(left: ResourceProcessMetric, right: ResourceProcessM
   return Math.abs(cpuDelta) > 0.01 ? cpuDelta : right.memoryBytes - left.memoryBytes;
 }
 
+function isUsefulSystemProcessMetric(metric: ResourceProcessMetric): boolean {
+  return metric.pid !== 0 && metric.name.toLowerCase() !== 'system idle process';
+}
+
 function summarizeGpuRows(rows: RawGpuEngineRow[], appProcessPids: Set<number>) {
   const systemGpuPercent = clampPercent(rows.reduce((sum, row) => sum + row.utilizationPercent, 0));
   const appGpuPercent = clampPercent(rows.reduce((sum, row) => {
@@ -392,7 +396,10 @@ export class ResourceMonitor {
           : 'El arbol de procesos externo solo esta disponible en Windows para esta version.';
       }
       if (processMetricsByPid.size > 0) {
-        systemProcesses = [...processMetricsByPid.values()].sort(sortProcessMetrics).slice(0, 12);
+        systemProcesses = [...processMetricsByPid.values()]
+          .filter(isUsefulSystemProcessMetric)
+          .sort(sortProcessMetrics)
+          .slice(0, 12);
       } else if (!unavailableReason) {
         unavailableReason = this.platform === 'win32'
           ? 'No se encontraron procesos descendientes del worker.'
