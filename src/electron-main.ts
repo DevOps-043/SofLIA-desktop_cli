@@ -360,6 +360,7 @@ async function getStatus() {
     closeToTray = config.closeToTray !== false;
     const client = new SofliaWorkerApiClient(config.apiUrl, config.token);
     const heartbeat = await client.heartbeat(workerAbortController ? 'BUSY' : 'OFFLINE', {
+      appVersion,
       maxConcurrentJobs: config.maxConcurrentJobs,
     });
     return {
@@ -422,6 +423,7 @@ async function startWorker() {
   try {
     const config = await loadConfig();
     await new SofliaWorkerApiClient(config.apiUrl, config.token).heartbeat('ONLINE', {
+      appVersion,
       maxConcurrentJobs: config.maxConcurrentJobs,
     });
   } catch (error) {
@@ -431,6 +433,7 @@ async function startWorker() {
 
   workerAbortController = new AbortController();
   void startWorkerLoop({
+    appVersion,
     signal: workerAbortController.signal,
     onStatus: publishWorkerEvent,
   }).catch((error) => {
@@ -462,6 +465,7 @@ async function stopWorker() {
   try {
     const config = await loadConfig();
     await new SofliaWorkerApiClient(config.apiUrl, config.token).heartbeat('OFFLINE', {
+      appVersion,
       maxConcurrentJobs: config.maxConcurrentJobs,
     });
   } catch {
@@ -596,6 +600,7 @@ ipcMain.handle('app:link', async (_event, input: { apiUrl: string; code: string 
   await saveConfig({ apiUrl, token: result.workerToken });
   const linkedConfig = await loadConfig();
   await new SofliaWorkerApiClient(apiUrl, result.workerToken).heartbeat('OFFLINE', {
+    appVersion,
     maxConcurrentJobs: linkedConfig.maxConcurrentJobs,
   });
   await startWorker();

@@ -48,7 +48,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 export async function startWorkerLoop(
-  options: { pollIntervalMs?: number; signal?: AbortSignal; dependencies?: Partial<WorkerLoopDependencies> } & WorkerLoopEvents = {},
+  options: { appVersion?: string; pollIntervalMs?: number; signal?: AbortSignal; dependencies?: Partial<WorkerLoopDependencies> } & WorkerLoopEvents = {},
 ): Promise<void> {
   const dependencies: WorkerLoopDependencies = {
     loadConfig,
@@ -291,6 +291,7 @@ export async function startWorkerLoop(
       }
 
       await client.heartbeat('ONLINE', {
+        appVersion: options.appVersion,
         maxConcurrentJobs: config.maxConcurrentJobs,
         localRecovery: localJobStore ? {
           ...localJobStore.getRecoverySummary(),
@@ -338,7 +339,7 @@ export async function startWorkerLoop(
   }
 
   try {
-    await client.heartbeat('OFFLINE', { maxConcurrentJobs: config.maxConcurrentJobs });
+    await client.heartbeat('OFFLINE', { appVersion: options.appVersion, maxConcurrentJobs: config.maxConcurrentJobs });
   } catch {
     // Best-effort shutdown heartbeat only.
   }

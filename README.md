@@ -4,9 +4,9 @@ Aplicacion de escritorio para renderizar videos de SofLIA - Engine usando la com
 
 ## Version actual
 
-### v0.2.5
+### v0.2.6
 
-Patch enfocada en reintentos confiables de telemetria pendiente cuando el worker queda idle, telemetria fina de rendimiento del render local, atribucion global de procesos del sistema, prevencion de corridas fantasma al finalizar jobs, visibilidad de fases internas de Remotion, subida/checksum por streaming para artefactos grandes, recuperacion local de jobs, retencion configurable, reintentos seguros de subida/confirmacion, builds de plantilla, previews, experiencia de escritorio, actualizaciones silenciosas y cache escribible de Remotion en equipos instalados.
+Patch enfocada en trazabilidad confiable de la version instalada del worker, reintentos confiables de telemetria pendiente cuando el worker queda idle, telemetria fina de rendimiento del render local, atribucion global de procesos del sistema, prevencion de corridas fantasma al finalizar jobs, visibilidad de fases internas de Remotion, subida/checksum por streaming para artefactos grandes, recuperacion local de jobs, retencion configurable, reintentos seguros de subida/confirmacion, builds de plantilla, previews, experiencia de escritorio, actualizaciones silenciosas y cache escribible de Remotion en equipos instalados.
 
 Incluye:
 
@@ -16,6 +16,7 @@ Incluye:
 - Vinculacion con codigo temporal `SLIA-000000`.
 - Guardado local de token limitado del worker.
 - Heartbeat para mostrar si el equipo esta disponible.
+- Heartbeat con version explicita del binario Electron/CLI para evitar que workers empaquetados reporten `dev`.
 - Inicio automatico del worker al abrir la app cuando el equipo ya esta vinculado.
 - Control manual para iniciar o detener el render local.
 - Reclamo automatico de jobs con `claim-next`.
@@ -131,9 +132,9 @@ GitHub Actions genera instaladores desde:
 .github/workflows/desktop-installers.yml
 ```
 
-El workflow valida que el tag coincida con la version de `package.json`. Para esta publicacion la version esperada es `0.2.5`, por lo tanto el tag debe ser `v0.2.5`.
+El workflow valida que el tag coincida con la version de `package.json`. Para esta publicacion la version esperada es `0.2.6`, por lo tanto el tag debe ser `v0.2.6`.
 
-### Comandos para subir v0.2.5
+### Comandos para subir v0.2.6
 
 Revisar estado:
 
@@ -156,7 +157,7 @@ git add .
 Crear commit:
 
 ```powershell
-git commit -m "Release v0.2.5 worker update"
+git commit -m "Release v0.2.6 worker update"
 ```
 
 Subir rama actual:
@@ -168,13 +169,13 @@ git push origin HEAD
 Crear tag:
 
 ```powershell
-git tag v0.2.5
+git tag v0.2.6
 ```
 
 Subir tag:
 
 ```powershell
-git push origin v0.2.5
+git push origin v0.2.6
 ```
 
 Al subir un tag `v*`, el workflow crea un GitHub Release y adjunta instaladores para Windows, macOS y Linux.
@@ -189,7 +190,7 @@ https://github.com/DevOps-043/SofLIA-desktop_cli/releases/latest/download/SofLIA
 
 ## Firma y notarizacion macOS
 
-Por ahora el workflow no exige secrets de GitHub para macOS. Esto permite publicar la v0.2.5 sin bloquear el release.
+Por ahora el workflow no exige secrets de GitHub para macOS. Esto permite publicar la v0.2.6 sin bloquear el release.
 
 Cuando decidamos activar firma y notarizacion, necesitaremos configurar:
 

@@ -75,6 +75,7 @@ export interface LinkWorkerInput {
 }
 
 export interface WorkerHeartbeatOptions {
+  appVersion?: string;
   maxConcurrentJobs?: number;
   localRecovery?: {
     pendingUploads: number;
@@ -110,7 +111,7 @@ export class SofliaWorkerApiClient {
       status,
       platform: process.platform,
       arch: process.arch,
-      appVersion: process.env.npm_package_version || 'dev',
+      appVersion: options.appVersion || process.env.npm_package_version || 'dev',
       maxConcurrentJobs: options.maxConcurrentJobs,
       localRecovery: options.localRecovery,
     });

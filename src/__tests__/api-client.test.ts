@@ -91,9 +91,10 @@ describe('SofliaWorkerApiClient', () => {
     }) as typeof fetch;
 
     const client = new SofliaWorkerApiClient('http://localhost:4000', 'swk_secret');
-    await client.heartbeat('ONLINE', { maxConcurrentJobs: 4 });
+    await client.heartbeat('ONLINE', { appVersion: '0.2.6', maxConcurrentJobs: 4 });
 
     assert.equal(requestBody?.status, 'ONLINE');
+    assert.equal(requestBody?.appVersion, '0.2.6');
     assert.equal(requestBody?.maxConcurrentJobs, 4);
   });
 
