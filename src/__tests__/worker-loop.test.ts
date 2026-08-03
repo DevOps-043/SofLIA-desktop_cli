@@ -50,6 +50,8 @@ function createTemplatePreviewJob(jobId: string): ClaimedJob {
     bundleType: 'zip',
     posterUploadUrl: `https://example.test/upload/${jobId}.png`,
     posterStoragePath: `template-previews/${jobId}/poster.png`,
+    videoUploadUrl: `https://example.test/upload/${jobId}.mp4`,
+    videoStoragePath: `template-previews/${jobId}/preview.mp4`,
     previewFrame: 12,
     timeoutInMilliseconds: 300000,
   };

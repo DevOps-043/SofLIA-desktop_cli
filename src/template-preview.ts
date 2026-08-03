@@ -1,6 +1,7 @@
+import { createReadStream } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
-import { ensureBrowser, renderStill, selectComposition } from '@remotion/renderer';
+import { ensureBrowser, renderMedia, renderStill, selectComposition } from '@remotion/renderer';
 import type { ClaimedTemplatePreviewJob, SofliaWorkerApiClient } from './api-client.js';
 import { downloadAndExtractBundle, sha256File } from './bundle.js';
 import type { LocalCleanupPolicy } from './local-job-state.js';
@@ -16,6 +17,12 @@ type RenderTemplatePreviewJobOptions = {
   localJobStore?: LocalJobStore;
   localRetentionPolicy?: LocalCleanupPolicy;
 };
+
+type StreamingRequestInit = RequestInit & {
+  duplex: 'half';
+};
+
+const DEFAULT_PREVIEW_MAX_SECONDS = 6;
 
 async function reportProgress(
   client: SofliaWorkerApiClient,
@@ -45,6 +52,45 @@ async function readSafeUploadFailureDetail(response: Response): Promise<string> 
   return sanitizeLog(rawBody).replace(/\s+/g, ' ').trim().slice(0, 500);
 }
 
+function optionalPositiveNumber(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function resolvePreviewFrameCount(fps: number, durationInFrames: number) {
+  const maxSeconds = optionalPositiveNumber(process.env.EXTERNAL_TEMPLATE_PREVIEW_MAX_SECONDS);
+  const maxFramesFromSeconds = maxSeconds ? Math.ceil(maxSeconds * fps) : null;
+  const legacyMaxFrames = optionalPositiveNumber(process.env.EXTERNAL_TEMPLATE_PREVIEW_MAX_FRAMES);
+  const requestedFrames = maxFramesFromSeconds ?? legacyMaxFrames ?? Math.ceil(DEFAULT_PREVIEW_MAX_SECONDS * fps);
+  return Math.max(1, Math.min(durationInFrames, Math.ceil(requestedFrames)));
+}
+
+async function uploadFile(input: {
+  uploadUrl: string;
+  filePath: string;
+  contentType: string;
+  failureLabel: string;
+}) {
+  const stat = await fsp.stat(input.filePath);
+  const uploadRequest: StreamingRequestInit = {
+    method: 'PUT',
+    headers: {
+      'content-type': input.contentType,
+      'content-length': String(stat.size),
+    },
+    body: createReadStream(input.filePath) as unknown as BodyInit,
+    duplex: 'half',
+  };
+  const uploadResponse = await fetch(input.uploadUrl, uploadRequest);
+  if (!uploadResponse.ok) {
+    const detail = await readSafeUploadFailureDetail(uploadResponse);
+    throw new Error(
+      `${input.failureLabel}: HTTP ${uploadResponse.status}${detail ? ` - ${detail}` : ''}`,
+    );
+  }
+}
+
 export async function renderTemplatePreviewJob(
   client: SofliaWorkerApiClient,
   job: ClaimedTemplatePreviewJob,
@@ -59,7 +105,8 @@ export async function renderTemplatePreviewJob(
   });
   const serveUrl = await downloadAndExtractBundle(job.bundleUrl, job.bundleHash, { requireSha256: true });
   const outputDir = path.join(getWorkspaceDir(), 'template-previews', job.previewId);
-  const outputPath = path.join(outputDir, 'poster.png');
+  const posterPath = path.join(outputDir, 'poster.png');
+  const videoPath = path.join(outputDir, 'preview.mp4');
 
   await fsp.rm(outputDir, { recursive: true, force: true });
   await fsp.mkdir(outputDir, { recursive: true });
@@ -81,8 +128,11 @@ export async function renderTemplatePreviewJob(
     0,
     Math.min(composition.durationInFrames - 1, Math.round(job.previewFrame || 0)),
   );
+  const shouldRenderVideoPreview = Boolean(job.videoUploadUrl && job.videoStoragePath);
+  const previewFrames = resolvePreviewFrameCount(composition.fps, composition.durationInFrames);
+  const previewDurationSeconds = Math.max(1, Math.round(previewFrames / composition.fps));
 
-  await reportProgress(client, job, 60, 'Renderizando poster de preview', 'template_preview_render_still', options.onProgress, {
+  await reportProgress(client, job, 52, 'Renderizando poster de preview', 'template_preview_render_still', options.onProgress, {
     previewFrame,
     durationInFrames: composition.durationInFrames,
   });
@@ -92,52 +142,90 @@ export async function renderTemplatePreviewJob(
     inputProps: job.resolvedProps,
     frame: previewFrame,
     imageFormat: 'png',
-    output: outputPath,
+    output: posterPath,
     timeoutInMilliseconds: job.timeoutInMilliseconds,
     binariesDirectory,
   });
 
-  const checksum = await sha256File(outputPath);
-  const stat = await fsp.stat(outputPath);
+  if (shouldRenderVideoPreview) {
+    await reportProgress(client, job, 66, 'Renderizando video corto de preview', 'template_preview_render_video', options.onProgress, {
+      previewFrames,
+      previewDurationSeconds,
+      compositionFrames: composition.durationInFrames,
+      compositionDurationSeconds: Math.round(composition.durationInFrames / composition.fps),
+    });
+    await renderMedia({
+      serveUrl,
+      composition,
+      codec: 'h264',
+      outputLocation: videoPath,
+      inputProps: job.resolvedProps,
+      frameRange: [0, previewFrames - 1],
+      timeoutInMilliseconds: job.timeoutInMilliseconds,
+      binariesDirectory,
+      overwrite: true,
+    });
+  }
+
+  const primaryOutputPath = shouldRenderVideoPreview ? videoPath : posterPath;
+  const primaryStoragePath = shouldRenderVideoPreview ? job.videoStoragePath! : job.posterStoragePath;
+  const checksum = await sha256File(primaryOutputPath);
+  const stat = await fsp.stat(primaryOutputPath);
   options.localJobStore?.markArtifactReady({
     jobId: job.jobId,
-    artifactPath: outputPath,
+    artifactPath: primaryOutputPath,
     artifactChecksum: checksum,
     artifactSizeBytes: stat.size,
-    outputStoragePath: job.posterStoragePath,
+    durationSeconds: shouldRenderVideoPreview ? previewDurationSeconds : undefined,
+    outputStoragePath: primaryStoragePath,
   });
 
-  await reportProgress(client, job, 88, 'Subiendo poster de preview', 'template_preview_upload', options.onProgress, {
+  await reportProgress(client, job, 82, 'Subiendo poster de preview', 'template_preview_upload_poster', options.onProgress, {
     posterStoragePath: job.posterStoragePath,
   });
-  const poster = await fsp.readFile(outputPath);
   try {
-    options.localJobStore?.updateStage(job.jobId, 'uploading', 'template_preview_upload');
-    const uploadResponse = await fetch(job.posterUploadUrl, {
-      method: 'PUT',
-      headers: { 'content-type': 'image/png' },
-      body: new Blob([new Uint8Array(poster)], { type: 'image/png' }),
+    options.localJobStore?.updateStage(job.jobId, 'uploading', 'template_preview_upload_poster');
+    await uploadFile({
+      uploadUrl: job.posterUploadUrl,
+      filePath: posterPath,
+      contentType: 'image/png',
+      failureLabel: 'No se pudo subir el poster de preview',
     });
-    if (!uploadResponse.ok) {
-      const detail = await readSafeUploadFailureDetail(uploadResponse);
-      throw new Error(
-        `No se pudo subir el poster de preview: HTTP ${uploadResponse.status}${detail ? ` - ${detail}` : ''}`,
-      );
+
+    if (shouldRenderVideoPreview) {
+      await reportProgress(client, job, 90, 'Subiendo video de preview', 'template_preview_upload_video', options.onProgress, {
+        videoStoragePath: job.videoStoragePath,
+        previewFrames,
+        previewDurationSeconds,
+      });
+      options.localJobStore?.updateStage(job.jobId, 'uploading', 'template_preview_upload_video');
+      await uploadFile({
+        uploadUrl: job.videoUploadUrl!,
+        filePath: videoPath,
+        contentType: 'video/mp4',
+        failureLabel: 'No se pudo subir el video de preview',
+      });
     }
     options.localJobStore?.markUploadedPendingComplete(job.jobId);
   } catch (error) {
     options.localJobStore?.markUploadFailed(job.jobId, error);
-    throw new RecoverableJobError('Poster de preview listo localmente, pero la subida quedo pendiente.', 'upload', error);
+    throw new RecoverableJobError('Preview de plantilla listo localmente, pero la subida quedo pendiente.', 'upload', error);
   }
 
   try {
     await client.complete(job.jobId, {
-      outputStoragePath: job.posterStoragePath,
+      outputStoragePath: primaryStoragePath,
       checksum,
+      previewDurationSeconds: shouldRenderVideoPreview ? previewDurationSeconds : undefined,
+      previewFrames: shouldRenderVideoPreview ? previewFrames : undefined,
+      compositionDurationSeconds: Math.round(composition.durationInFrames / composition.fps),
+      compositionFrames: composition.durationInFrames,
+      posterStoragePath: job.posterStoragePath,
+      videoStoragePath: shouldRenderVideoPreview ? job.videoStoragePath : undefined,
     });
     options.localJobStore?.markRemoteConfirmed(job.jobId);
   } catch (error) {
     options.localJobStore?.markConfirmFailed(job.jobId, error);
-    throw new RecoverableJobError('Poster de preview subido, pero la confirmacion remota quedo pendiente.', 'complete', error);
+    throw new RecoverableJobError('Preview de plantilla subido, pero la confirmacion remota quedo pendiente.', 'complete', error);
   }
 }

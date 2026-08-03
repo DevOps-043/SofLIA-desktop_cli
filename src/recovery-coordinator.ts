@@ -19,6 +19,9 @@ export interface RecoveryClient {
     outputStoragePath: string;
     checksum: string;
     durationSeconds?: number;
+    previewDurationSeconds?: number;
+    posterStoragePath?: string;
+    videoStoragePath?: string;
     buildHash?: string;
     buildLog?: string;
   }) => Promise<unknown>;
@@ -94,7 +97,7 @@ export class RecoveryCoordinator {
         const uploadRequest: StreamingRequestInit = {
           method: 'PUT',
           headers: {
-            'content-type': contentTypeForJob(job.jobType),
+            'content-type': contentTypeForJob(job),
             'content-length': String(stat.size),
           },
           body: createReadStream(job.artifactPath) as unknown as BodyInit,
@@ -117,6 +120,9 @@ export class RecoveryCoordinator {
         outputStoragePath: job.outputStoragePath,
         checksum: job.artifactChecksum,
         durationSeconds: job.durationSeconds,
+        previewDurationSeconds: job.jobType === 'template_preview' ? job.durationSeconds : undefined,
+        posterStoragePath: job.jobType === 'template_preview' && isPreviewPosterPath(job.outputStoragePath) ? job.outputStoragePath : undefined,
+        videoStoragePath: job.jobType === 'template_preview' && isPreviewVideoPath(job.outputStoragePath) ? job.outputStoragePath : undefined,
         buildHash: job.jobType === 'template_build' ? job.artifactChecksum : undefined,
         buildLog: job.jobType === 'template_build' ? `Template build recovered locally. jobId=${job.jobId}` : undefined,
       });
@@ -150,8 +156,18 @@ export class RecoveryCoordinator {
   }
 }
 
-function contentTypeForJob(jobType: LocalJobRecord['jobType']): string {
-  if (jobType === 'template_build') return 'application/zip';
-  if (jobType === 'template_preview') return 'image/png';
+function contentTypeForJob(job: LocalJobRecord): string {
+  if (job.jobType === 'template_build') return 'application/zip';
+  if (job.jobType === 'template_preview') {
+    return isPreviewVideoPath(job.outputStoragePath) ? 'video/mp4' : 'image/png';
+  }
   return 'video/mp4';
+}
+
+function isPreviewVideoPath(value: string | undefined): value is string {
+  return Boolean(value?.toLowerCase().match(/\.(mp4|webm|mov)$/));
+}
+
+function isPreviewPosterPath(value: string | undefined): value is string {
+  return Boolean(value?.toLowerCase().match(/\.(png|jpe?g|webp)$/));
 }

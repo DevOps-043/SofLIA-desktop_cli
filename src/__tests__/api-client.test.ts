@@ -208,6 +208,8 @@ describe('SofliaWorkerApiClient', () => {
             bundleType: 'zip',
             posterUploadUrl: 'https://example.test/upload/preview-1.png',
             posterStoragePath: 'template-previews/preview-1/poster.png',
+            videoUploadUrl: 'https://example.test/upload/preview-1.mp4',
+            videoStoragePath: 'template-previews/preview-1/preview.mp4',
             previewFrame: 12,
             timeoutInMilliseconds: 300000,
           },
@@ -226,6 +228,8 @@ describe('SofliaWorkerApiClient', () => {
             bundleType: 'zip',
             posterUploadUrl: 'https://example.test/upload/preview-2.png',
             posterStoragePath: 'template-previews/preview-2/poster.png',
+            videoUploadUrl: 'https://example.test/upload/preview-2.mp4',
+            videoStoragePath: 'template-previews/preview-2/preview.mp4',
             previewFrame: 24,
             timeoutInMilliseconds: 300000,
           },
@@ -241,6 +245,7 @@ describe('SofliaWorkerApiClient', () => {
 
     assert.equal(jobs.length, 2);
     assert.equal(jobs[0]?.jobType, 'template_preview');
+    assert.equal(jobs[0]?.jobType === 'template_preview' ? jobs[0].videoStoragePath : null, 'template-previews/preview-1/preview.mp4');
     assert.equal(jobs[1]?.jobId, 'preview-2');
   });
 

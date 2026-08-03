@@ -4,9 +4,9 @@ Aplicacion de escritorio para renderizar videos de SofLIA - Engine usando la com
 
 ## Version actual
 
-### v0.2.7
+### v0.3.0
 
-Patch enfocada en cierre confiable de runs de telemetria aunque el envio de samples falle temporalmente, captura del arbol global de procesos cuando existe un unico run abierto aunque el worker este en reposo, trazabilidad confiable de la version instalada del worker, reintentos confiables de telemetria pendiente cuando el worker queda idle, telemetria fina de rendimiento del render local, atribucion global de procesos del sistema, prevencion de corridas fantasma al finalizar jobs, visibilidad de fases internas de Remotion, subida/checksum por streaming para artefactos grandes, recuperacion local de jobs, retencion configurable, reintentos seguros de subida/confirmacion, builds de plantilla, previews, experiencia de escritorio, actualizaciones silenciosas y cache escribible de Remotion en equipos instalados.
+Minor enfocada en previews externos de plantilla con poster PNG y video corto MP4, mas cierre confiable de runs de telemetria aunque el envio de samples falle temporalmente, captura del arbol global de procesos cuando existe un unico run abierto aunque el worker este en reposo, trazabilidad confiable de la version instalada del worker, reintentos confiables de telemetria pendiente cuando el worker queda idle, telemetria fina de rendimiento del render local, atribucion global de procesos del sistema, prevencion de corridas fantasma al finalizar jobs, visibilidad de fases internas de Remotion, subida/checksum por streaming para artefactos grandes, recuperacion local de jobs, retencion configurable, reintentos seguros de subida/confirmacion, builds de plantilla, previews, experiencia de escritorio, actualizaciones silenciosas y cache escribible de Remotion en equipos instalados.
 
 Incluye:
 
@@ -29,6 +29,7 @@ Incluye:
 - Checksum y subida de MP4 mediante streams para reducir picos de memoria en videos pesados.
 - Reintentos de subida recuperables tambien mediante streams.
 - Compatibilidad con jobs de build y preview de plantillas.
+- Generacion de previews externos de plantilla con poster PNG y video MP4 corto cuando el backend entrega URLs para ambos artefactos.
 - Cache de Remotion/Chrome en la carpeta de datos del usuario para evitar errores de permisos en `Program Files`.
 - Recuperacion local de renders, builds y previews cuando ya existe un artefacto final en disco.
 - Reintentos seguros de `upload` y `complete` sin renderizar otra vez cuando el artefacto final ya esta listo.
@@ -134,9 +135,9 @@ GitHub Actions genera instaladores desde:
 .github/workflows/desktop-installers.yml
 ```
 
-El workflow valida que el tag coincida con la version de `package.json`. Para esta publicacion la version esperada es `0.2.7`, por lo tanto el tag debe ser `v0.2.7`.
+El workflow valida que el tag coincida con la version de `package.json`. Para esta publicacion la version esperada es `0.3.0`, por lo tanto el tag debe ser `v0.3.0`.
 
-### Comandos para subir v0.2.7
+### Comandos para subir v0.3.0
 
 Revisar estado:
 
@@ -159,7 +160,7 @@ git add .
 Crear commit:
 
 ```powershell
-git commit -m "Release v0.2.7 worker update"
+git commit -m "Release v0.3.0 worker update"
 ```
 
 Subir rama actual:
@@ -171,13 +172,13 @@ git push origin HEAD
 Crear tag:
 
 ```powershell
-git tag v0.2.7
+git tag v0.3.0
 ```
 
 Subir tag:
 
 ```powershell
-git push origin v0.2.7
+git push origin v0.3.0
 ```
 
 Al subir un tag `v*`, el workflow crea un GitHub Release y adjunta instaladores para Windows, macOS y Linux.
@@ -192,7 +193,7 @@ https://github.com/DevOps-043/SofLIA-desktop_cli/releases/latest/download/SofLIA
 
 ## Firma y notarizacion macOS
 
-Por ahora el workflow no exige secrets de GitHub para macOS. Esto permite publicar la v0.2.7 sin bloquear el release.
+Por ahora el workflow no exige secrets de GitHub para macOS. Esto permite publicar la v0.3.0 sin bloquear el release.
 
 Cuando decidamos activar firma y notarizacion, necesitaremos configurar:
 

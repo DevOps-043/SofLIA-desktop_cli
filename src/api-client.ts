@@ -48,6 +48,8 @@ export interface ClaimedTemplatePreviewJob {
   bundleType: 'zip';
   posterUploadUrl: string;
   posterStoragePath: string;
+  videoUploadUrl?: string;
+  videoStoragePath?: string;
   previewFrame: number;
   timeoutInMilliseconds: number;
 }
@@ -152,6 +154,12 @@ export class SofliaWorkerApiClient {
     outputStoragePath: string;
     checksum: string;
     durationSeconds?: number;
+    previewDurationSeconds?: number;
+    previewFrames?: number;
+    compositionDurationSeconds?: number;
+    compositionFrames?: number;
+    posterStoragePath?: string;
+    videoStoragePath?: string;
     buildHash?: string;
     buildLog?: string;
   }) {

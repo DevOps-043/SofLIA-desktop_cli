@@ -149,6 +149,7 @@ export async function startWorkerLoop(
                 templateVersionId: job.templateVersionId,
                 propsHash: job.propsHash,
                 posterStoragePath: job.posterStoragePath,
+                videoStoragePath: job.videoStoragePath,
               }
           : {
               bundleHash: job.bundleHash,
@@ -358,7 +359,9 @@ export async function startWorkerLoop(
       cleanupPolicy: config.localRetentionPolicy || 'delete_on_remote_confirm',
       bundleHash: job.bundleHash,
       propsHash: job.jobType === 'template_build' ? undefined : job.propsHash,
-      outputStoragePath: job.jobType === 'template_preview' ? job.posterStoragePath : job.outputStoragePath,
+      outputStoragePath: job.jobType === 'template_preview'
+        ? job.videoStoragePath || job.posterStoragePath
+        : job.outputStoragePath,
     });
   }
 }
