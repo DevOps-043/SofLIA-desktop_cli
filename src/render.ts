@@ -10,6 +10,7 @@ import type { LocalJobStore } from './local-job-store.js';
 import { getWorkspaceDir } from './paths.js';
 import { RecoverableJobError } from './recoverable-job-error.js';
 import { getRemotionBinariesDirectory } from './remotion-binaries.js';
+import { prepareRenderAssetsForJob } from './render-asset-preparer.js';
 import type { RenderProgressEvent } from './shared/worker-events.js';
 import type { WorkerChromiumGl, WorkerHardwareAcceleration } from './shared/worker-capacity.js';
 
@@ -93,6 +94,20 @@ export async function renderClaimedJob(
 
   await fsp.mkdir(outputDir, { recursive: true });
   options.localJobStore?.updateStage(job.jobId, 'running', 'render_workspace_ready');
+  const assetPrepareStartedAtMs = Date.now();
+  await reportProgress(client, job, 19, 'Preparando assets locales', 'asset_prepare', options.onProgress);
+  const preparedAssets = await prepareRenderAssetsForJob({
+    jobId: job.jobId,
+    outputDir,
+    resolvedProps: job.resolvedProps,
+  });
+  await reportProgress(client, job, 21, 'Assets locales listos', 'asset_prepare', options.onProgress, {
+    elapsedMs: roundMs(elapsedMsSince(assetPrepareStartedAtMs)),
+    assetCount: preparedAssets.assetCount,
+    assetBytes: preparedAssets.assetBytes,
+  });
+
+  try {
   const browserStartedAtMs = Date.now();
   await reportProgress(client, job, 22, 'Preparando Chromium', 'browser_ensure', options.onProgress, {
     binariesDirectory,
@@ -108,7 +123,7 @@ export async function renderClaimedJob(
   const composition = await selectComposition({
     serveUrl,
     id: job.compositionId,
-    inputProps: job.resolvedProps,
+    inputProps: preparedAssets.resolvedProps,
     timeoutInMilliseconds: job.timeoutInMilliseconds,
     binariesDirectory,
     chromiumOptions,
@@ -207,7 +222,7 @@ export async function renderClaimedJob(
     serveUrl,
     codec: 'h264',
     outputLocation: outputPath,
-    inputProps: job.resolvedProps,
+    inputProps: preparedAssets.resolvedProps,
     timeoutInMilliseconds: job.timeoutInMilliseconds,
     binariesDirectory,
     chromiumOptions,
@@ -290,5 +305,8 @@ export async function renderClaimedJob(
   } catch (error) {
     options.localJobStore?.markConfirmFailed(job.jobId, error);
     throw new RecoverableJobError('Video final subido, pero la confirmacion remota quedo pendiente.', 'complete', error);
+  }
+  } finally {
+    await preparedAssets.close();
   }
 }
