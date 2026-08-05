@@ -11,6 +11,7 @@ import { getWorkspaceDir } from './paths.js';
 import { RecoverableJobError } from './recoverable-job-error.js';
 import { getRemotionBinariesDirectory } from './remotion-binaries.js';
 import { prepareRenderAssetsForJob } from './render-asset-preparer.js';
+import { RenderProgressReporter } from './render-progress-reporter.js';
 import type { RenderProgressEvent } from './shared/worker-events.js';
 import type { WorkerChromiumGl, WorkerHardwareAcceleration } from './shared/worker-capacity.js';
 
@@ -28,26 +29,6 @@ type StreamingRequestInit = RequestInit & {
   duplex: 'half';
 };
 
-async function reportProgress(
-  client: SofliaWorkerApiClient,
-  job: ClaimedRenderJob,
-  percent: number,
-  message: string,
-  stage: string,
-  onProgress?: (event: RenderProgressEvent) => void,
-  detail?: Record<string, unknown>,
-) {
-  onProgress?.({
-    jobId: job.jobId,
-    compositionId: job.compositionId,
-    percent,
-    message,
-    stage,
-    detail,
-  });
-  await client.progress(job.jobId, percent, message, stage);
-}
-
 function elapsedMsSince(startedAtMs: number): number {
   return Math.max(0, Date.now() - startedAtMs);
 }
@@ -63,27 +44,35 @@ function formatBytes(bytes: number | null): string {
   return `${Math.round((bytes / 1024 / 1024) * 10) / 10} MB`;
 }
 
+function describeAssetSource(source: string): string {
+  try {
+    const url = new URL(source);
+    const filename = path.basename(url.pathname);
+    return `${url.hostname}/${filename || 'asset'}`;
+  } catch {
+    return 'asset';
+  }
+}
+
 export async function renderClaimedJob(
   client: SofliaWorkerApiClient,
   job: ClaimedRenderJob,
   options: RenderClaimedJobOptions = {},
 ): Promise<void> {
   const jobStartedAtMs = Date.now();
+  const progressReporter = new RenderProgressReporter(client, job, options.onProgress);
   const isExternalServeUrl = job.bundleType === 'serve_url';
   const binariesDirectory = getRemotionBinariesDirectory();
-  await reportProgress(
-    client,
-    job,
+  await progressReporter.report(
     10,
     isExternalServeUrl ? 'Usando sitio Remotion aprobado' : 'Descargando bundle Remotion',
     isExternalServeUrl ? 'external_serve_url' : 'bundle_download',
-    options.onProgress,
   );
   const bundleStartedAtMs = Date.now();
   const serveUrl = isExternalServeUrl
     ? job.bundleUrl
     : await downloadAndExtractBundle(job.bundleUrl, job.bundleHash, { requireSha256: true });
-  await reportProgress(client, job, 18, 'Bundle Remotion listo', 'bundle_ready', options.onProgress, {
+  await progressReporter.report(18, 'Bundle Remotion listo', 'bundle_ready', {
     elapsedMs: roundMs(elapsedMsSince(bundleStartedAtMs)),
     bundleType: job.bundleType || 'zip',
     bundleHash: job.bundleHash,
@@ -95,13 +84,28 @@ export async function renderClaimedJob(
   await fsp.mkdir(outputDir, { recursive: true });
   options.localJobStore?.updateStage(job.jobId, 'running', 'render_workspace_ready');
   const assetPrepareStartedAtMs = Date.now();
-  await reportProgress(client, job, 19, 'Preparando assets locales', 'asset_prepare', options.onProgress);
+  await progressReporter.report(19, 'Preparando assets locales', 'asset_prepare');
   const preparedAssets = await prepareRenderAssetsForJob({
     jobId: job.jobId,
     outputDir,
     resolvedProps: job.resolvedProps,
+    onProgress: (event) => {
+      const isValidated = event.phase === 'validation_completed';
+      const message = isValidated
+        ? `Asset validado (${event.assetIndex}/${event.assetCount}): ${event.assetKey}`
+        : `Descargando asset (${event.assetIndex}/${event.assetCount}): ${event.assetKey} (${formatBytes(event.downloadedBytes)})`;
+      progressReporter.schedule(isValidated ? 20 : 19, message, 'asset_prepare', {
+        assetKey: event.assetKey,
+        assetIndex: event.assetIndex,
+        assetCount: event.assetCount,
+        phase: event.phase,
+        attempt: event.attempt,
+        downloadedBytes: event.downloadedBytes,
+        expectedBytes: event.expectedBytes,
+      });
+    },
   });
-  await reportProgress(client, job, 21, 'Assets locales listos', 'asset_prepare', options.onProgress, {
+  await progressReporter.report(21, 'Assets locales listos', 'asset_prepare', {
     elapsedMs: roundMs(elapsedMsSince(assetPrepareStartedAtMs)),
     assetCount: preparedAssets.assetCount,
     assetBytes: preparedAssets.assetBytes,
@@ -109,16 +113,16 @@ export async function renderClaimedJob(
 
   try {
   const browserStartedAtMs = Date.now();
-  await reportProgress(client, job, 22, 'Preparando Chromium', 'browser_ensure', options.onProgress, {
+  await progressReporter.report(22, 'Preparando Chromium', 'browser_ensure', {
     binariesDirectory,
   });
   await ensureBrowser();
-  await reportProgress(client, job, 24, 'Chromium listo', 'browser_ready', options.onProgress, {
+  await progressReporter.report(24, 'Chromium listo', 'browser_ready', {
     elapsedMs: roundMs(elapsedMsSince(browserStartedAtMs)),
   });
 
   const compositionStartedAtMs = Date.now();
-  await reportProgress(client, job, 25, 'Resolviendo composicion', 'composition_select', options.onProgress);
+  await progressReporter.report(25, 'Resolviendo composicion', 'composition_select');
   const chromiumOptions = options.chromiumGl ? { gl: options.chromiumGl } : undefined;
   const composition = await selectComposition({
     serveUrl,
@@ -128,7 +132,7 @@ export async function renderClaimedJob(
     binariesDirectory,
     chromiumOptions,
   });
-  await reportProgress(client, job, 29, 'Composicion resuelta', 'composition_ready', options.onProgress, {
+  await progressReporter.report(29, 'Composicion resuelta', 'composition_ready', {
     elapsedMs: roundMs(elapsedMsSince(compositionStartedAtMs)),
     durationInFrames: composition.durationInFrames,
     fps: composition.fps,
@@ -153,17 +157,14 @@ export async function renderClaimedJob(
       if (!shouldReport) return;
       lastAssetPercent = percentDone ?? lastAssetPercent;
       lastAssetProgressAtMs = now;
-      void reportProgress(
-        client,
-        job,
+      progressReporter.schedule(
         Math.max(lastPercent, 31),
         percentDone === null
           ? `Descargando asset de Remotion (${formatBytes(downloaded)})`
           : `Descargando asset de Remotion (${percentDone}%)`,
         'asset_download',
-        options.onProgress,
         {
-          src,
+          assetSource: describeAssetSource(src),
           percent: percentDone,
           downloadedBytes: downloaded,
           totalBytes: totalSize,
@@ -194,9 +195,7 @@ export async function renderClaimedJob(
     lastPercent = Math.max(lastPercent, percent);
     lastRenderStage = stage;
     lastRenderProgressAtMs = now;
-    void reportProgress(
-      client,
-      job,
+    progressReporter.schedule(
       lastPercent,
       stage === 'render_muxing'
         ? 'Combinando audio y video'
@@ -204,7 +203,6 @@ export async function renderClaimedJob(
           ? `Codificando video (${Math.round(progress * 100)}%)`
           : `Renderizando fotogramas (${Math.round(progress * 100)}%)`,
       stage,
-      options.onProgress,
       {
         progress,
         renderedFrames,
@@ -230,7 +228,7 @@ export async function renderClaimedJob(
     hardwareAcceleration: options.hardwareAcceleration,
     videoBitrate: options.videoBitrate,
     onStart: ({ frameCount, parallelEncoding, resolvedConcurrency }) => {
-      void reportProgress(client, job, 30, 'Remotion inicio el render', 'render_start', options.onProgress, {
+      progressReporter.schedule(30, 'Remotion inicio el render', 'render_start', {
         frameCount,
         parallelEncoding,
         resolvedConcurrency,
@@ -243,16 +241,16 @@ export async function renderClaimedJob(
     onDownload,
     onProgress: onRenderProgress,
   });
-  await reportProgress(client, job, 86, 'Render y encoding terminados', 'render_complete', options.onProgress, {
+  await progressReporter.report(86, 'Render y encoding terminados', 'render_complete', {
     elapsedMs: roundMs(elapsedMsSince(renderStartedAtMs)),
     totalElapsedMs: roundMs(elapsedMsSince(jobStartedAtMs)),
   });
 
   const checksumStartedAtMs = Date.now();
-  await reportProgress(client, job, 87, 'Calculando checksum del video', 'checksum', options.onProgress);
+  await progressReporter.report(87, 'Calculando checksum del video', 'checksum');
   const checksum = await sha256File(outputPath);
   const stat = await fsp.stat(outputPath);
-  await reportProgress(client, job, 89, 'Checksum listo', 'checksum_ready', options.onProgress, {
+  await progressReporter.report(89, 'Checksum listo', 'checksum_ready', {
     elapsedMs: roundMs(elapsedMsSince(checksumStartedAtMs)),
     artifactSizeBytes: stat.size,
   });
@@ -266,7 +264,7 @@ export async function renderClaimedJob(
   });
 
   const uploadStartedAtMs = Date.now();
-  await reportProgress(client, job, 90, 'Subiendo video final', 'upload', options.onProgress, {
+  await progressReporter.report(90, 'Subiendo video final', 'upload', {
     artifactSizeBytes: stat.size,
     uploadMode: 'stream',
   });
@@ -286,7 +284,7 @@ export async function renderClaimedJob(
       throw new Error(`No se pudo subir el video final: HTTP ${uploadResponse.status}`);
     }
     options.localJobStore?.markUploadedPendingComplete(job.jobId);
-    await reportProgress(client, job, 95, 'Video final subido', 'upload_complete', options.onProgress, {
+    await progressReporter.report(95, 'Video final subido', 'upload_complete', {
       elapsedMs: roundMs(elapsedMsSince(uploadStartedAtMs)),
       artifactSizeBytes: stat.size,
     });

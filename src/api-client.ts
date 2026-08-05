@@ -144,11 +144,18 @@ export class SofliaWorkerApiClient {
     return response.job ? [response.job] : [];
   }
 
-  async progress(jobId: string, percent: number, message: string, stage: string) {
+  async progress(
+    jobId: string,
+    percent: number,
+    message: string,
+    stage: string,
+    detail?: Record<string, unknown>,
+  ) {
     return this.post(`/api/v1/production/remotion/workers/jobs/${encodeURIComponent(jobId)}/progress`, {
       percent,
       message,
       stage,
+      detail,
     });
   }
 

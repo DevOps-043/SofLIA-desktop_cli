@@ -55,6 +55,16 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function resolveJobFailureCode(jobType: 'render' | 'template_build' | 'template_preview', message: string): string {
+  const fallback = jobType === 'template_build'
+    ? 'DESKTOP_WORKER_TEMPLATE_BUILD_FAILED'
+    : jobType === 'template_preview'
+      ? 'DESKTOP_WORKER_TEMPLATE_PREVIEW_FAILED'
+      : 'DESKTOP_WORKER_RENDER_FAILED';
+  const explicitCode = /^([A-Z][A-Z0-9_]{2,})(?::|\b)/.exec(message)?.[1];
+  return explicitCode || fallback;
+}
+
 export async function startWorkerLoop(
   options: { appVersion?: string; pollIntervalMs?: number; signal?: AbortSignal; dependencies?: Partial<WorkerLoopDependencies> } & WorkerLoopEvents = {},
 ): Promise<void> {
@@ -135,10 +145,14 @@ export async function startWorkerLoop(
   }
 
   async function processClaimedJob(job: ClaimedJob): Promise<void> {
-    const claimedJobType = job.jobType;
     const jobType = job.jobType === 'template_build' ? 'template_build' : job.jobType === 'template_preview' ? 'template_preview' : 'render';
     const startedAtMs = Date.now();
     const startedAt = new Date(startedAtMs).toISOString();
+    let lastKnownStage = jobType === 'template_build'
+      ? 'template_build_start'
+      : jobType === 'template_preview'
+        ? 'template_preview_start'
+        : 'render_start';
     const withTiming = (event: WorkerRuntimeEvent, finished = false): WorkerRuntimeEvent => {
       const now = Date.now();
       const elapsedMs = Math.max(0, now - startedAtMs);
@@ -210,6 +224,7 @@ export async function startWorkerLoop(
           localJobStore: localJobStore || undefined,
           localRetentionPolicy: config.localRetentionPolicy,
           onProgress: (progress) => {
+            lastKnownStage = progress.stage || lastKnownStage;
             emit(withTiming({
               state: 'rendering',
               ...progress,
@@ -221,6 +236,7 @@ export async function startWorkerLoop(
           localJobStore: localJobStore || undefined,
           localRetentionPolicy: config.localRetentionPolicy,
           onProgress: (progress) => {
+            lastKnownStage = progress.stage || lastKnownStage;
             emit(withTiming({
               state: 'rendering',
               ...progress,
@@ -236,6 +252,7 @@ export async function startWorkerLoop(
           localJobStore: localJobStore || undefined,
           localRetentionPolicy: config.localRetentionPolicy,
           onProgress: (progress) => {
+            lastKnownStage = progress.stage || lastKnownStage;
             emit(withTiming({
               state: 'rendering',
               ...progress,
@@ -258,6 +275,7 @@ export async function startWorkerLoop(
       }, true));
     } catch (error) {
       const message = sanitizeLog(error instanceof Error ? error.message : String(error));
+      const errorCode = resolveJobFailureCode(jobType, message);
       logError('Error procesando job:', error);
       if (isRecoverableJobError(error)) {
         emit(withTiming({
@@ -285,21 +303,13 @@ export async function startWorkerLoop(
       try {
         localJobStore?.markNonRecoverableFailure(
           job.jobId,
-          claimedJobType === 'template_build'
-            ? 'DESKTOP_WORKER_TEMPLATE_BUILD_FAILED'
-            : claimedJobType === 'template_preview'
-              ? 'DESKTOP_WORKER_TEMPLATE_PREVIEW_FAILED'
-              : 'DESKTOP_WORKER_RENDER_FAILED',
+          errorCode,
           message,
         );
         await client.fail(job.jobId, {
-          errorCode: claimedJobType === 'template_build'
-            ? 'DESKTOP_WORKER_TEMPLATE_BUILD_FAILED'
-            : claimedJobType === 'template_preview'
-              ? 'DESKTOP_WORKER_TEMPLATE_PREVIEW_FAILED'
-              : 'DESKTOP_WORKER_RENDER_FAILED',
+          errorCode,
           message,
-          stage: claimedJobType === 'template_build' ? 'template_build' : claimedJobType === 'template_preview' ? 'template_preview' : 'cli_start',
+          stage: lastKnownStage,
         });
       } catch (failError) {
         logError('No se pudo reportar el fallo al API:', failError);

@@ -290,4 +290,48 @@ describe('startWorkerLoop', () => {
     assert.deepEqual(previewJobs.sort(), ['preview-1', 'preview-2']);
     assert.equal(maxActivePreviews, 2);
   });
+
+  it('reports the concrete render error code and last observed stage', async () => {
+    const controller = new AbortController();
+    const job = createJob('job-failure-details');
+    let failure: { errorCode: string; message: string; stage: string } | undefined;
+
+    await startWorkerLoop({
+      signal: controller.signal,
+      pollIntervalMs: 1,
+      onStatus: (event) => {
+        if (event.state === 'error') controller.abort();
+      },
+      dependencies: {
+        loadConfig: async () => ({ apiUrl: 'http://localhost:4000', token: 'token' }),
+        createClient: () => ({
+          heartbeat: async () => ({}),
+          claimNext: async () => job,
+          fail: async (_jobId, input) => {
+            failure = input;
+            return {};
+          },
+        }),
+        createLocalJobStore: async () => null,
+        createWorkspaceCleanup: createNoopWorkspaceCleanup,
+        renderJob: async (_client, claimedJob, options) => {
+          options?.onProgress?.({
+            jobId: claimedJob.jobId,
+            compositionId: claimedJob.compositionId,
+            percent: 19,
+            stage: 'asset_prepare',
+            message: 'Validando avatarVideoUrl',
+          });
+          throw new Error('RENDER_ASSET_INCOMPLETE: avatarVideoUrl expected 4 bytes, got 3');
+        },
+        sleep: async () => {},
+      },
+    });
+
+    assert.deepEqual(failure, {
+      errorCode: 'RENDER_ASSET_INCOMPLETE',
+      message: 'RENDER_ASSET_INCOMPLETE: avatarVideoUrl expected 4 bytes, got 3',
+      stage: 'asset_prepare',
+    });
+  });
 });

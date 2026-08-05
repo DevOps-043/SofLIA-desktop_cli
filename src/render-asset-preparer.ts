@@ -1,16 +1,18 @@
 import crypto from 'node:crypto';
-import { createReadStream, createWriteStream } from 'node:fs';
+import { createWriteStream } from 'node:fs';
 import * as fsp from 'node:fs/promises';
-import { createServer, type Server } from 'node:http';
 import * as path from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { ReadableStream as NodeReadableStream } from 'node:stream/web';
+import { startLocalAssetServer } from './render-asset-server.js';
 
 const MAX_RENDER_ASSET_BYTES = 750 * 1024 * 1024;
 const MAX_TOTAL_RENDER_ASSET_BYTES = 2 * 1024 * 1024 * 1024;
 const ASSET_DOWNLOAD_TIMEOUT_MS = 60_000;
 const ASSET_DOWNLOAD_ATTEMPTS = 2;
+const ASSET_PROGRESS_INTERVAL_MS = 5_000;
+const ASSET_PROGRESS_BYTE_INTERVAL = 8 * 1024 * 1024;
 const LOCAL_MEDIA_PREFLIGHT_TIMEOUT_MS = 30_000;
 
 const ALLOWED_EXTENSIONS = new Set([
@@ -55,6 +57,28 @@ const CONTENT_TYPE_EXTENSIONS: Array<[RegExp, string]> = [
   [/^video\/webm\b/i, '.webm'],
 ];
 
+const EXTENSION_CONTENT_TYPES = new Map<string, string>([
+  ['.aac', 'audio/aac'],
+  ['.css', 'text/css'],
+  ['.gif', 'image/gif'],
+  ['.jpeg', 'image/jpeg'],
+  ['.jpg', 'image/jpeg'],
+  ['.m4a', 'audio/mp4'],
+  ['.mov', 'video/quicktime'],
+  ['.mp3', 'audio/mpeg'],
+  ['.mp4', 'video/mp4'],
+  ['.ogg', 'audio/ogg'],
+  ['.otf', 'font/otf'],
+  ['.png', 'image/png'],
+  ['.svg', 'image/svg+xml'],
+  ['.ttf', 'font/ttf'],
+  ['.wav', 'audio/wav'],
+  ['.webm', 'video/webm'],
+  ['.webp', 'image/webp'],
+  ['.woff', 'font/woff'],
+  ['.woff2', 'font/woff2'],
+]);
+
 type FetchLike = typeof fetch;
 
 interface AssetReference {
@@ -70,6 +94,7 @@ interface LocalAsset {
   contentType: string;
   bytes: number;
   expectedBytes: number | null;
+  attempt: number;
 }
 
 export interface LocalMediaProbeResult {
@@ -81,6 +106,16 @@ export type LocalMediaProbe = (asset: {
   localPath: string;
   contentType: string;
 }) => Promise<LocalMediaProbeResult>;
+
+export interface RenderAssetPreparationProgress {
+  phase: 'download_started' | 'download_progress' | 'download_completed' | 'validation_completed';
+  assetKey: string;
+  assetIndex: number;
+  assetCount: number;
+  attempt: number;
+  downloadedBytes: number;
+  expectedBytes: number | null;
+}
 
 export interface PreparedRenderAssets {
   resolvedProps: Record<string, unknown>;
@@ -95,6 +130,7 @@ export async function prepareRenderAssetsForJob(params: {
   resolvedProps: Record<string, unknown>;
   fetchImpl?: FetchLike;
   mediaProbe?: LocalMediaProbe;
+  onProgress?: (event: RenderAssetPreparationProgress) => void;
 }): Promise<PreparedRenderAssets> {
   const props = structuredClone(params.resolvedProps);
   const references = collectRenderAssetReferences(props);
@@ -117,20 +153,38 @@ export async function prepareRenderAssetsForJob(params: {
   const fetchImpl = params.fetchImpl ?? fetch;
   const mediaProbe = params.mediaProbe ?? probeLocalMediaAsset;
   const downloadedByUrl = new Map<string, LocalAsset>();
+  const seenRemoteUrls = new Set<string>();
+  const uniqueRemoteReferences = remoteReferences.filter((reference) => {
+    if (seenRemoteUrls.has(reference.url)) return false;
+    seenRemoteUrls.add(reference.url);
+    return true;
+  });
   let assetBytes = 0;
 
-  for (const reference of remoteReferences) {
-    const cached = downloadedByUrl.get(reference.url);
-    if (cached) continue;
-
+  for (const [index, reference] of uniqueRemoteReferences.entries()) {
+    const assetIndex = index + 1;
     const asset = await downloadRenderAsset({
       url: reference.url,
       assetsDir,
       fetchImpl,
       currentTotalBytes: assetBytes,
       key: reference.key,
+      onProgress: (event) => params.onProgress?.({
+        ...event,
+        assetIndex,
+        assetCount: uniqueRemoteReferences.length,
+      }),
     });
     await validateDownloadedRenderAsset(asset, mediaProbe);
+    params.onProgress?.({
+      phase: 'validation_completed',
+      assetKey: reference.key,
+      assetIndex,
+      assetCount: uniqueRemoteReferences.length,
+      attempt: asset.attempt,
+      downloadedBytes: asset.bytes,
+      expectedBytes: asset.expectedBytes,
+    });
     assetBytes += asset.bytes;
     downloadedByUrl.set(reference.url, asset);
   }
@@ -233,12 +287,13 @@ async function downloadRenderAsset(params: {
   fetchImpl: FetchLike;
   currentTotalBytes: number;
   key: string;
+  onProgress?: (event: Omit<RenderAssetPreparationProgress, 'assetIndex' | 'assetCount'>) => void;
 }): Promise<LocalAsset> {
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= ASSET_DOWNLOAD_ATTEMPTS; attempt += 1) {
     try {
-      return await downloadRenderAssetOnce(params);
+      return await downloadRenderAssetOnce({ ...params, attempt });
     } catch (error) {
       lastError = error;
       if (attempt >= ASSET_DOWNLOAD_ATTEMPTS) break;
@@ -254,6 +309,8 @@ async function downloadRenderAssetOnce(params: {
   fetchImpl: FetchLike;
   currentTotalBytes: number;
   key: string;
+  attempt: number;
+  onProgress?: (event: Omit<RenderAssetPreparationProgress, 'assetIndex' | 'assetCount'>) => void;
 }): Promise<LocalAsset> {
   const response = await params.fetchImpl(params.url, {
     signal: AbortSignal.timeout(ASSET_DOWNLOAD_TIMEOUT_MS),
@@ -263,19 +320,21 @@ async function downloadRenderAssetOnce(params: {
     throw new Error(`RENDER_ASSET_DOWNLOAD_FAILED: HTTP ${response.status}`);
   }
 
-  const contentLength = Number(response.headers.get('content-length'));
-  if (Number.isFinite(contentLength) && contentLength > MAX_RENDER_ASSET_BYTES) {
+  const contentLength = parseContentLength(response.headers.get('content-length'));
+  if (contentLength !== null && contentLength > MAX_RENDER_ASSET_BYTES) {
     throw new Error('RENDER_ASSET_TOO_LARGE');
   }
-  if (Number.isFinite(contentLength) && params.currentTotalBytes + contentLength > MAX_TOTAL_RENDER_ASSET_BYTES) {
+  if (contentLength !== null && params.currentTotalBytes + contentLength > MAX_TOTAL_RENDER_ASSET_BYTES) {
     throw new Error('RENDER_ASSET_TOTAL_TOO_LARGE');
   }
 
-  const contentType = response.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
-  const extension = resolveAssetExtension(params.url, contentType);
+  const responseContentType = response.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
+  const extension = resolveAssetExtension(params.url, responseContentType);
   if (!ALLOWED_EXTENSIONS.has(extension) && extension !== '.css') {
-    throw new Error(`RENDER_ASSET_UNSUPPORTED_TYPE: ${contentType || extension}`);
+    throw new Error(`RENDER_ASSET_UNSUPPORTED_TYPE: ${responseContentType || extension}`);
   }
+  const contentType = resolveEffectiveContentType(responseContentType, extension);
+  validateAssetContentType(params.key, extension, contentType);
 
   const id = `${crypto.createHash('sha256').update(params.url).digest('hex').slice(0, 24)}${extension}`;
   const localPath = path.join(params.assetsDir, id);
@@ -286,6 +345,15 @@ async function downloadRenderAssetOnce(params: {
   }
 
   let downloadedBytes = 0;
+  let lastReportedBytes = 0;
+  let lastReportedAtMs = Date.now();
+  params.onProgress?.({
+    phase: 'download_started',
+    assetKey: params.key,
+    attempt: params.attempt,
+    downloadedBytes: 0,
+    expectedBytes: contentLength,
+  });
   const byteLimit = new Transform({
     transform(chunk: Buffer, _encoding, callback) {
       downloadedBytes += chunk.length;
@@ -297,6 +365,21 @@ async function downloadRenderAssetOnce(params: {
         callback(new Error('RENDER_ASSET_TOTAL_TOO_LARGE'));
         return;
       }
+      const now = Date.now();
+      if (
+        downloadedBytes - lastReportedBytes >= ASSET_PROGRESS_BYTE_INTERVAL
+        || now - lastReportedAtMs >= ASSET_PROGRESS_INTERVAL_MS
+      ) {
+        lastReportedBytes = downloadedBytes;
+        lastReportedAtMs = now;
+        params.onProgress?.({
+          phase: 'download_progress',
+          assetKey: params.key,
+          attempt: params.attempt,
+          downloadedBytes,
+          expectedBytes: contentLength,
+        });
+      }
       callback(null, chunk);
     },
   });
@@ -307,6 +390,13 @@ async function downloadRenderAssetOnce(params: {
     createWriteStream(localPath),
   );
   const stat = await fsp.stat(localPath);
+  params.onProgress?.({
+    phase: 'download_completed',
+    assetKey: params.key,
+    attempt: params.attempt,
+    downloadedBytes: stat.size,
+    expectedBytes: contentLength,
+  });
 
   return {
     key: params.key,
@@ -314,7 +404,8 @@ async function downloadRenderAssetOnce(params: {
     localPath,
     contentType,
     bytes: stat.size,
-    expectedBytes: Number.isFinite(contentLength) ? contentLength : null,
+    expectedBytes: contentLength,
+    attempt: params.attempt,
   };
 }
 
@@ -325,6 +416,7 @@ async function validateDownloadedRenderAsset(asset: LocalAsset, mediaProbe: Loca
   if (asset.expectedBytes !== null && asset.bytes !== asset.expectedBytes) {
     throw new Error(`RENDER_ASSET_INCOMPLETE: ${asset.key} expected ${asset.expectedBytes} bytes, got ${asset.bytes}`);
   }
+  await validateImageSignature(asset);
   if (!isProbeableMediaAsset(asset)) return;
 
   try {
@@ -349,6 +441,74 @@ async function validateDownloadedRenderAsset(asset: LocalAsset, mediaProbe: Loca
 
 function isProbeableMediaAsset(asset: LocalAsset): boolean {
   return /^audio\//i.test(asset.contentType) || /^video\//i.test(asset.contentType);
+}
+
+function parseContentLength(rawValue: string | null): number | null {
+  if (rawValue === null || rawValue.trim().length === 0) return null;
+  const parsed = Number(rawValue);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function resolveEffectiveContentType(responseContentType: string, extension: string): string {
+  const normalizedContentType = responseContentType.toLowerCase();
+  if (normalizedContentType !== 'application/octet-stream' && normalizedContentType !== 'application/mp4') {
+    return responseContentType;
+  }
+  return EXTENSION_CONTENT_TYPES.get(extension) ?? responseContentType;
+}
+
+function validateAssetContentType(assetKey: string, extension: string, contentType: string): void {
+  const normalizedContentType = contentType.toLowerCase();
+  const isFont = ['.otf', '.ttf', '.woff', '.woff2'].includes(extension);
+  const matches = extension === '.css'
+    ? normalizedContentType === 'text/css'
+    : ['.gif', '.jpeg', '.jpg', '.png', '.svg', '.webp'].includes(extension)
+      ? normalizedContentType.startsWith('image/')
+      : extension === '.m4a'
+        ? normalizedContentType.startsWith('audio/')
+          || normalizedContentType === 'video/mp4'
+          || normalizedContentType === 'application/mp4'
+        : ['.aac', '.mp3', '.ogg', '.wav'].includes(extension)
+          ? normalizedContentType.startsWith('audio/')
+          : ['.mov', '.mp4', '.webm'].includes(extension)
+            ? normalizedContentType.startsWith('video/') || normalizedContentType === 'application/mp4'
+            : isFont
+              ? normalizedContentType.startsWith('font/')
+                || normalizedContentType.startsWith('application/font-')
+                || normalizedContentType === 'application/x-font-ttf'
+                || normalizedContentType === 'application/x-font-opentype'
+              : true;
+  if (!matches) {
+    throw new Error(`RENDER_ASSET_CONTENT_TYPE_MISMATCH: ${assetKey} does not match ${contentType}`);
+  }
+}
+
+async function validateImageSignature(asset: LocalAsset): Promise<void> {
+  if (!asset.contentType.toLowerCase().startsWith('image/')) return;
+
+  const handle = await fsp.open(asset.localPath, 'r');
+  try {
+    const buffer = Buffer.alloc(Math.min(asset.bytes, 512));
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    const header = buffer.subarray(0, bytesRead);
+    const extension = path.extname(asset.localPath).toLowerCase();
+    const isValid = extension === '.png'
+      ? header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+      : extension === '.jpg' || extension === '.jpeg'
+        ? header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff
+        : extension === '.gif'
+          ? header.subarray(0, 6).toString('ascii') === 'GIF87a' || header.subarray(0, 6).toString('ascii') === 'GIF89a'
+          : extension === '.webp'
+            ? header.subarray(0, 4).toString('ascii') === 'RIFF' && header.subarray(8, 12).toString('ascii') === 'WEBP'
+            : extension === '.svg'
+              ? /<svg\b/i.test(header.toString('utf8'))
+              : true;
+    if (!isValid) {
+      throw new Error(`RENDER_ASSET_INVALID_SIGNATURE: ${asset.key}`);
+    }
+  } finally {
+    await handle.close();
+  }
 }
 
 async function probeLocalMediaAsset(asset: {
@@ -383,63 +543,4 @@ function safeUrlPathname(value: string): string {
   } catch {
     return '';
   }
-}
-
-async function startLocalAssetServer(params: {
-  assets: LocalAsset[];
-  token: string;
-}): Promise<{ close(): Promise<void>; urlFor(id: string): string }> {
-  const assetById = new Map(params.assets.map((asset) => [asset.id, asset] as const));
-  const server = createServer((request, response) => {
-    const requestUrl = new URL(request.url || '/', 'http://127.0.0.1');
-    const parts = requestUrl.pathname.split('/').filter(Boolean);
-    const [, token, assetId] = parts;
-
-    if (request.method !== 'GET' || parts[0] !== 'assets' || token !== params.token || !assetId) {
-      response.writeHead(404).end();
-      return;
-    }
-
-    const asset = assetById.get(assetId);
-    if (!asset) {
-      response.writeHead(404).end();
-      return;
-    }
-
-    response.writeHead(200, {
-      'content-type': asset.contentType,
-      'cache-control': 'no-store',
-    });
-    createReadStream(asset.localPath).pipe(response);
-  });
-
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      server.off('error', reject);
-      resolve();
-    });
-  });
-
-  const address = server.address();
-  if (!address || typeof address === 'string') {
-    await closeServer(server);
-    throw new Error('RENDER_ASSET_SERVER_BIND_FAILED');
-  }
-
-  return {
-    urlFor(id: string) {
-      return `http://127.0.0.1:${address.port}/assets/${params.token}/${encodeURIComponent(id)}`;
-    },
-    close: () => closeServer(server),
-  };
-}
-
-function closeServer(server: Server): Promise<void> {
-  return new Promise((resolve, reject) => {
-    server.close((error) => {
-      if (error) reject(error);
-      else resolve();
-    });
-  });
 }
