@@ -8,7 +8,7 @@ import { SofliaWorkerApiClient } from './api-client.js';
 import { clearWorkerLink, loadConfig, loadOptionalConfig, saveConfig, saveConfigSettings } from './config.js';
 import { normalizeLocalRetentionPolicy } from './local-job-state.js';
 import { LocalJobStore } from './local-job-store.js';
-import { sanitizeLog } from './logging.js';
+import { logError, sanitizeLog } from './logging.js';
 import { configureWritableWorkingDirectory, getAppDataDir, getConfigPath } from './paths.js';
 import { ResourceMonitor } from './resource-monitor.js';
 import type { ResourceActiveJob } from './shared/resource-metrics.js';
@@ -323,17 +323,17 @@ function createWindow(): void {
   });
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
-    console.error('Renderer load failed', sanitizeLog(JSON.stringify({ errorCode, errorDescription, validatedURL })));
+    logError('Renderer load failed', JSON.stringify({ errorCode, errorDescription, validatedURL }));
   });
 
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    console.error('Renderer process gone', sanitizeLog(JSON.stringify(details)));
+    logError('Renderer process gone', JSON.stringify(details));
   });
 
   mainWindow.webContents.on('console-message', (event) => {
     const { level, message } = event;
     if (level === 'warning' || level === 'error') {
-      console.error('Renderer console:', sanitizeLog(message));
+      logError('Renderer console:', message);
     }
   });
 
@@ -656,7 +656,7 @@ app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
   configureAutoUpdates();
   await telemetryService.initialize().catch((error) => {
-    console.error('Telemetry initialization failed', sanitizeLog(error instanceof Error ? error.message : String(error)));
+    logError('Telemetry initialization failed', error);
   });
   const config = await loadOptionalConfig();
   closeToTray = config.closeToTray !== false;
