@@ -279,6 +279,31 @@ export class LocalJobStore {
     return rows.map(mapLocalJobRow);
   }
 
+  getJob(jobId: string): LocalJobRecord | null {
+    const row = this.getDatabase().prepare(`
+      SELECT * FROM local_jobs
+      WHERE job_id = ?
+    `).get(jobId) as LocalJobRow | undefined;
+    return row ? mapLocalJobRow(row) : null;
+  }
+
+  listActiveJobIds(): string[] {
+    const rows = this.getDatabase().prepare(`
+      SELECT job_id FROM local_jobs
+      WHERE local_status IN (
+        'claimed',
+        'running',
+        'artifact_ready',
+        'uploading',
+        'upload_failed',
+        'uploaded_pending_complete',
+        'confirm_failed',
+        'remote_confirmed_pending_cleanup'
+      )
+    `).all() as Array<{ job_id: string }>;
+    return rows.map((row) => row.job_id);
+  }
+
   getRecoverySummary(): LocalRecoverySummary {
     const row = this.getDatabase().prepare(`
       SELECT

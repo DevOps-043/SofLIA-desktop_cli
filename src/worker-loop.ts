@@ -1,6 +1,8 @@
 import { SofliaWorkerApiClient } from './api-client.js';
 import type { ClaimedJob, ClaimedRenderJob, ClaimedTemplateBuildJob } from './api-client.js';
 import { loadConfig } from './config.js';
+import { JobWorkspaceCleanupService } from './job-workspace-cleanup.js';
+import { LocalArtifactRetentionService } from './local-artifact-retention.js';
 import { localJobTypeToRemoteTable } from './local-job-state.js';
 import { LocalJobStore } from './local-job-store.js';
 import { log, logError, sanitizeLog } from './logging.js';
@@ -21,6 +23,11 @@ type WorkerLoopClient = Pick<SofliaWorkerApiClient, 'heartbeat' | 'claimNext' | 
   refreshUploadUrl?: SofliaWorkerApiClient['refreshUploadUrl'];
 };
 
+type WorkspaceCleanup = Pick<
+  JobWorkspaceCleanupService,
+  'cleanupJobWorkspace' | 'cleanupStaleTransientWorkspaces'
+>;
+
 type WorkerLoopDependencies = {
   loadConfig: typeof loadConfig;
   createClient: (apiUrl: string, token: string) => WorkerLoopClient;
@@ -40,6 +47,7 @@ type WorkerLoopDependencies = {
     options: Parameters<typeof renderTemplatePreviewJob>[2],
   ) => Promise<void>;
   createLocalJobStore: () => Promise<LocalJobStore | null>;
+  createWorkspaceCleanup: () => WorkspaceCleanup;
   sleep: (ms: number) => Promise<void>;
 };
 
@@ -61,12 +69,15 @@ export async function startWorkerLoop(
       await store.initialize();
       return store;
     },
+    createWorkspaceCleanup: () => new JobWorkspaceCleanupService(),
     sleep,
     ...options.dependencies,
   };
   const config = await dependencies.loadConfig();
   const client = dependencies.createClient(config.apiUrl, config.token);
   const localJobStore = await dependencies.createLocalJobStore();
+  const workspaceCleanup = dependencies.createWorkspaceCleanup();
+  const retention = localJobStore ? new LocalArtifactRetentionService(localJobStore) : null;
   const pollIntervalMs = Math.max(1000, options.pollIntervalMs || 5000);
   let shouldStop = false;
   const emit = options.onStatus || (() => {});
@@ -107,6 +118,22 @@ export async function startWorkerLoop(
     },
   });
 
+  try {
+    const startupCleanup = await workspaceCleanup.cleanupStaleTransientWorkspaces({
+      activeJobIds: localJobStore?.listActiveJobIds() || [],
+    });
+    if (startupCleanup.deletedCount > 0) {
+      log('Workspaces temporales antiguos eliminados', startupCleanup);
+      emit({
+        state: 'online',
+        message: 'Workspaces temporales antiguos eliminados',
+        detail: startupCleanup,
+      });
+    }
+  } catch (error) {
+    logError('No se pudo limpiar workspaces temporales antiguos:', error);
+  }
+
   async function processClaimedJob(job: ClaimedJob): Promise<void> {
     const claimedJobType = job.jobType;
     const jobType = job.jobType === 'template_build' ? 'template_build' : job.jobType === 'template_preview' ? 'template_preview' : 'render';
@@ -123,6 +150,7 @@ export async function startWorkerLoop(
         elapsedSeconds: Math.floor(elapsedMs / 1000),
       };
     };
+    await cleanupWorkspaceBeforeJob(job, jobType);
     try {
       emit(withTiming({
         state: 'claiming',
@@ -276,6 +304,8 @@ export async function startWorkerLoop(
       } catch (failError) {
         logError('No se pudo reportar el fallo al API:', failError);
       }
+    } finally {
+      await cleanupWorkspaceAfterJob(job, jobType);
     }
   }
 
@@ -363,5 +393,47 @@ export async function startWorkerLoop(
         ? job.videoStoragePath || job.posterStoragePath
         : job.outputStoragePath,
     });
+  }
+
+  async function cleanupWorkspaceBeforeJob(job: ClaimedJob, jobType: 'render' | 'template_build' | 'template_preview'): Promise<void> {
+    try {
+      const result = await workspaceCleanup.cleanupJobWorkspace({
+        jobId: job.jobId,
+        jobType,
+        jobRecord: localJobStore?.getJob(job.jobId) || null,
+        force: false,
+      });
+      if (result.deleted) {
+        log('Workspace previo del job eliminado', { jobId: job.jobId, jobType });
+      }
+    } catch (error) {
+      logError('No se pudo limpiar workspace previo del job:', error);
+    }
+  }
+
+  async function cleanupWorkspaceAfterJob(job: ClaimedJob, jobType: 'render' | 'template_build' | 'template_preview'): Promise<void> {
+    try {
+      const jobRecord = localJobStore?.getJob(job.jobId) || null;
+      if (
+        jobRecord?.localStatus === 'remote_confirmed_pending_cleanup' &&
+        (jobRecord.cleanupStatus === 'pending' || jobRecord.cleanupStatus === 'cleanup_failed')
+      ) {
+        const retentionResult = await retention?.applyRetention(jobRecord);
+        if (retentionResult === 'deleted') {
+          log('Artefacto local del job eliminado por politica de retencion', { jobId: job.jobId, jobType });
+        }
+        return;
+      }
+      const result = await workspaceCleanup.cleanupJobWorkspace({
+        jobId: job.jobId,
+        jobType,
+        jobRecord,
+      });
+      if (result.deleted) {
+        log('Workspace temporal del job eliminado', { jobId: job.jobId, jobType });
+      }
+    } catch (error) {
+      logError('No se pudo limpiar workspace temporal del job:', error);
+    }
   }
 }

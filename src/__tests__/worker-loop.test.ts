@@ -57,6 +57,13 @@ function createTemplatePreviewJob(jobId: string): ClaimedJob {
   };
 }
 
+function createNoopWorkspaceCleanup() {
+  return {
+    cleanupJobWorkspace: async () => ({ deleted: false }),
+    cleanupStaleTransientWorkspaces: async () => ({ deletedCount: 0, skippedCount: 0 }),
+  };
+}
+
 describe('startWorkerLoop', () => {
   it('forwards render progress events to the UI event stream', async () => {
     const events: WorkerRuntimeEvent[] = [];
@@ -91,6 +98,7 @@ describe('startWorkerLoop', () => {
           fail: async () => ({}),
         }),
         createLocalJobStore: async () => null,
+        createWorkspaceCleanup: createNoopWorkspaceCleanup,
         renderJob: async (_client, claimedJob, options) => {
           renderConcurrency = options?.renderConcurrency;
           hardwareAcceleration = options?.hardwareAcceleration;
@@ -140,6 +148,7 @@ describe('startWorkerLoop', () => {
           fail: async () => ({}),
         }),
         createLocalJobStore: async () => null,
+        createWorkspaceCleanup: createNoopWorkspaceCleanup,
         renderJob: async (_client, claimedJob) => {
           renderOrder.push(claimedJob.jobId);
         },
@@ -174,6 +183,7 @@ describe('startWorkerLoop', () => {
           fail: async () => ({}),
         }),
         createLocalJobStore: async () => null,
+        createWorkspaceCleanup: createNoopWorkspaceCleanup,
         renderJob: async (_client, claimedJob) => {
           renderedJobs.push(claimedJob.jobId);
         },
@@ -209,6 +219,7 @@ describe('startWorkerLoop', () => {
           fail: async () => ({}),
         }),
         createLocalJobStore: async () => null,
+        createWorkspaceCleanup: createNoopWorkspaceCleanup,
         renderJob: async (_client, claimedJob) => {
           renderedJobs.push(claimedJob.jobId);
         },
@@ -262,6 +273,7 @@ describe('startWorkerLoop', () => {
           fail: async () => ({}),
         }),
         createLocalJobStore: async () => null,
+        createWorkspaceCleanup: createNoopWorkspaceCleanup,
         renderJob: async () => {},
         buildTemplate: async () => {},
         renderTemplatePreview: async (_client, claimedJob) => {

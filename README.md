@@ -4,9 +4,9 @@ Aplicacion de escritorio para renderizar videos de SofLIA - Engine usando la com
 
 ## Version actual
 
-### v0.3.1
+### v0.3.2
 
-Patch enfocada en preparar assets remotos de render como archivos locales servidos desde `127.0.0.1` con token por job, mas previews externos de plantilla con poster PNG y video corto MP4, cierre confiable de runs de telemetria aunque el envio de samples falle temporalmente, captura del arbol global de procesos cuando existe un unico run abierto aunque el worker este en reposo, trazabilidad confiable de la version instalada del worker, reintentos confiables de telemetria pendiente cuando el worker queda idle, telemetria fina de rendimiento del render local, atribucion global de procesos del sistema, prevencion de corridas fantasma al finalizar jobs, visibilidad de fases internas de Remotion, subida/checksum por streaming para artefactos grandes, recuperacion local de jobs, retencion configurable, reintentos seguros de subida/confirmacion, builds de plantilla, previews, experiencia de escritorio, actualizaciones silenciosas y cache escribible de Remotion en equipos instalados.
+Patch enfocada en limpiar workspaces temporales sin borrar artefactos recuperables, corregir el orden de recuperacion para subir/confirmar antes de aplicar retencion local, preparar assets remotos de render como archivos locales servidos desde `127.0.0.1` con token por job, previews externos de plantilla con poster PNG y video corto MP4, cierre confiable de runs de telemetria aunque el envio de samples falle temporalmente, captura del arbol global de procesos cuando existe un unico run abierto aunque el worker este en reposo, trazabilidad confiable de la version instalada del worker, reintentos confiables de telemetria pendiente cuando el worker queda idle, telemetria fina de rendimiento del render local, atribucion global de procesos del sistema, prevencion de corridas fantasma al finalizar jobs, visibilidad de fases internas de Remotion, subida/checksum por streaming para artefactos grandes, recuperacion local de jobs, retencion configurable, reintentos seguros de subida/confirmacion, builds de plantilla, previews, experiencia de escritorio, actualizaciones silenciosas y cache escribible de Remotion en equipos instalados.
 
 Incluye:
 
@@ -34,6 +34,7 @@ Incluye:
 - Cache de Remotion/Chrome en la carpeta de datos del usuario para evitar errores de permisos en `Program Files`.
 - Recuperacion local de renders, builds y previews cuando ya existe un artefacto final en disco.
 - Reintentos seguros de `upload` y `complete` sin renderizar otra vez cuando el artefacto final ya esta listo.
+- Limpieza segura de workspaces temporales por job, preservando artefactos locales mientras sigan recuperables.
 - Politica local de retencion configurable: borrar al confirmar o conservar copia local.
 - Resumen local de recuperacion y limpieza en la app.
 - Instalacion silenciosa al reiniciar desde la actualizacion descargada, sin abrir el asistente NSIS.
@@ -136,9 +137,9 @@ GitHub Actions genera instaladores desde:
 .github/workflows/desktop-installers.yml
 ```
 
-El workflow valida que el tag coincida con la version de `package.json`. Para esta publicacion la version esperada es `0.3.1`, por lo tanto el tag debe ser `v0.3.1`.
+El workflow valida que el tag coincida con la version de `package.json`. Para esta publicacion la version esperada es `0.3.2`, por lo tanto el tag debe ser `v0.3.2`.
 
-### Comandos para subir v0.3.1
+### Comandos para subir v0.3.2
 
 Revisar estado:
 
@@ -161,7 +162,7 @@ git add .
 Crear commit:
 
 ```powershell
-git commit -m "Release v0.3.1 worker update"
+git commit -m "Release v0.3.2 worker update"
 ```
 
 Subir rama actual:
@@ -173,13 +174,13 @@ git push origin HEAD
 Crear tag:
 
 ```powershell
-git tag v0.3.1
+git tag v0.3.2
 ```
 
 Subir tag:
 
 ```powershell
-git push origin v0.3.1
+git push origin v0.3.2
 ```
 
 Al subir un tag `v*`, el workflow crea un GitHub Release y adjunta instaladores para Windows, macOS y Linux.
@@ -194,7 +195,7 @@ https://github.com/DevOps-043/SofLIA-desktop_cli/releases/latest/download/SofLIA
 
 ## Firma y notarizacion macOS
 
-Por ahora el workflow no exige secrets de GitHub para macOS. Esto permite publicar la v0.3.1 sin bloquear el release.
+Por ahora el workflow no exige secrets de GitHub para macOS. Esto permite publicar la v0.3.2 sin bloquear el release.
 
 Cuando decidamos activar firma y notarizacion, necesitaremos configurar:
 

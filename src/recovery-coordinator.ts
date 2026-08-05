@@ -71,7 +71,10 @@ export class RecoveryCoordinator {
       stage: job.stage,
     });
 
-    if (job.localStatus === 'remote_confirmed_pending_cleanup' || job.cleanupStatus === 'pending' || job.cleanupStatus === 'cleanup_failed') {
+    if (
+      job.localStatus === 'remote_confirmed_pending_cleanup' &&
+      (job.cleanupStatus === 'pending' || job.cleanupStatus === 'cleanup_failed')
+    ) {
       await this.applyCleanup(job);
       return;
     }

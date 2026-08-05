@@ -1,2 +1,2 @@
-export const APP_DISPLAY_VERSION = '0.3.1';
+export const APP_DISPLAY_VERSION = '0.3.2';
 export const DEFAULT_API_URL = 'https://soflia-coursegen.netlify.app';
