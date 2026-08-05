@@ -324,6 +324,7 @@ export async function startWorkerLoop(
       await client.heartbeat('ONLINE', {
         appVersion: options.appVersion,
         maxConcurrentJobs: config.maxConcurrentJobs,
+        activeJobIds: localJobStore?.listActiveJobIds() || [],
         localRecovery: localJobStore ? {
           ...localJobStore.getRecoverySummary(),
           jobs: localJobStore.listRecoverableJobs(25).map((job) => ({

@@ -1,6 +1,6 @@
 {
   "name": "soflia-engine-render-worker",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "desktopName": "soflia-engine-render-worker",
   "author": {
@@ -84,6 +84,7 @@
     "@remotion/renderer": "4.0.484",
     "electron-updater": "^6.8.9",
     "jszip": "^3.10.1",
+    "mediabunny": "^1.47.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "remotion": "4.0.484"

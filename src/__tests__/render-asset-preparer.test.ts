@@ -3,7 +3,7 @@ import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { getWorkspaceDir } from '../paths.js';
-import { prepareRenderAssetsForJob } from '../render-asset-preparer.js';
+import { prepareRenderAssetsForJob, type LocalMediaProbe } from '../render-asset-preparer.js';
 
 const createdDirs: string[] = [];
 
@@ -16,6 +16,8 @@ function createOutputDir(name: string) {
   createdDirs.push(outputDir);
   return outputDir;
 }
+
+const successfulMediaProbe: LocalMediaProbe = async () => ({ durationSeconds: 1 });
 
 describe('render asset preparer', () => {
   it('downloads known render asset URLs and rewrites props to the local asset server', async () => {
@@ -42,6 +44,7 @@ describe('render asset preparer', () => {
           },
         });
       }) as typeof fetch,
+      mediaProbe: successfulMediaProbe,
     });
 
     try {
@@ -83,6 +86,7 @@ describe('render asset preparer', () => {
           },
         });
       }) as typeof fetch,
+      mediaProbe: successfulMediaProbe,
     });
 
     try {
@@ -126,6 +130,7 @@ describe('render asset preparer', () => {
           'content-type': 'video/mp4',
         },
       })) as typeof fetch,
+      mediaProbe: successfulMediaProbe,
     });
 
     try {
@@ -136,5 +141,49 @@ describe('render asset preparer', () => {
     } finally {
       await prepared.close();
     }
+  });
+
+  it('rejects downloaded media when content-length does not match local bytes', async () => {
+    await assert.rejects(
+      () => prepareRenderAssetsForJob({
+        jobId: 'job-5',
+        outputDir: createOutputDir('incomplete'),
+        resolvedProps: {
+          avatarVideoUrl: 'https://cdn.example.test/avatar.mp4',
+        },
+        fetchImpl: (async () => new Response(new Uint8Array([1, 2, 3]), {
+          status: 200,
+          headers: {
+            'content-length': '4',
+            'content-type': 'video/mp4',
+          },
+        })) as typeof fetch,
+        mediaProbe: successfulMediaProbe,
+      }),
+      /RENDER_ASSET_INCOMPLETE: avatarVideoUrl/,
+    );
+  });
+
+  it('rejects downloaded media when local metadata cannot be read', async () => {
+    await assert.rejects(
+      () => prepareRenderAssetsForJob({
+        jobId: 'job-6',
+        outputDir: createOutputDir('metadata-failed'),
+        resolvedProps: {
+          avatarClips: [{ url: 'https://cdn.example.test/avatar-scene.mp4', order: 1 }],
+        },
+        fetchImpl: (async () => new Response(new Uint8Array([1, 2, 3]), {
+          status: 200,
+          headers: {
+            'content-length': '3',
+            'content-type': 'video/mp4',
+          },
+        })) as typeof fetch,
+        mediaProbe: async () => {
+          throw new Error('metadata failed');
+        },
+      }),
+      /RENDER_ASSET_PREFLIGHT_FAILED: avatarClips\.1: metadata failed/,
+    );
   });
 });

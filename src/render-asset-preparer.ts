@@ -11,6 +11,7 @@ const MAX_RENDER_ASSET_BYTES = 750 * 1024 * 1024;
 const MAX_TOTAL_RENDER_ASSET_BYTES = 2 * 1024 * 1024 * 1024;
 const ASSET_DOWNLOAD_TIMEOUT_MS = 60_000;
 const ASSET_DOWNLOAD_ATTEMPTS = 2;
+const LOCAL_MEDIA_PREFLIGHT_TIMEOUT_MS = 30_000;
 
 const ALLOWED_EXTENSIONS = new Set([
   '.aac',
@@ -57,15 +58,29 @@ const CONTENT_TYPE_EXTENSIONS: Array<[RegExp, string]> = [
 type FetchLike = typeof fetch;
 
 interface AssetReference {
+  key: string;
   url: string;
   assign(localUrl: string): void;
 }
 
 interface LocalAsset {
+  key: string;
   id: string;
   localPath: string;
   contentType: string;
+  bytes: number;
+  expectedBytes: number | null;
 }
+
+export interface LocalMediaProbeResult {
+  durationSeconds: number;
+}
+
+export type LocalMediaProbe = (asset: {
+  key: string;
+  localPath: string;
+  contentType: string;
+}) => Promise<LocalMediaProbeResult>;
 
 export interface PreparedRenderAssets {
   resolvedProps: Record<string, unknown>;
@@ -79,6 +94,7 @@ export async function prepareRenderAssetsForJob(params: {
   outputDir: string;
   resolvedProps: Record<string, unknown>;
   fetchImpl?: FetchLike;
+  mediaProbe?: LocalMediaProbe;
 }): Promise<PreparedRenderAssets> {
   const props = structuredClone(params.resolvedProps);
   const references = collectRenderAssetReferences(props);
@@ -99,6 +115,7 @@ export async function prepareRenderAssetsForJob(params: {
   await fsp.mkdir(assetsDir, { recursive: true });
 
   const fetchImpl = params.fetchImpl ?? fetch;
+  const mediaProbe = params.mediaProbe ?? probeLocalMediaAsset;
   const downloadedByUrl = new Map<string, LocalAsset>();
   let assetBytes = 0;
 
@@ -111,8 +128,10 @@ export async function prepareRenderAssetsForJob(params: {
       assetsDir,
       fetchImpl,
       currentTotalBytes: assetBytes,
+      key: reference.key,
     });
-    assetBytes += (await fsp.stat(asset.localPath)).size;
+    await validateDownloadedRenderAsset(asset, mediaProbe);
+    assetBytes += asset.bytes;
     downloadedByUrl.set(reference.url, asset);
   }
 
@@ -143,22 +162,21 @@ function collectRenderAssetReferences(props: Record<string, unknown>): AssetRefe
   collectStringProperty(mutableProps, 'bgMusicUrl', references);
   collectStringProperty(mutableProps, 'avatarVideoUrl', references);
 
-  for (const clip of readObjectArray(mutableProps.avatarClips)) {
-    collectStringProperty(clip, 'url', references);
-  }
+  readObjectArray(mutableProps.avatarClips).forEach((clip, index) => {
+    collectStringProperty(clip, 'url', references, `avatarClips.${index + 1}`);
+  });
 
-  for (const clip of readObjectArray(mutableProps.brollClips)) {
-    collectStringProperty(clip, 'url', references);
-  }
+  readObjectArray(mutableProps.brollClips).forEach((clip, index) => {
+    collectStringProperty(clip, 'url', references, `brollClips.${index + 1}`);
+  });
 
-  for (const slide of readObjectArray(mutableProps.slides)) {
-    collectStringProperty(slide, 'url', references);
-  }
+  readObjectArray(mutableProps.slides).forEach((slide, index) => {
+    collectStringProperty(slide, 'url', references, `slides.${index + 1}`);
+  });
 
-  for (const font of readObjectArray(mutableProps.deckFonts)) {
-    collectStringProperty(font, 'href', references);
-  }
-
+  readObjectArray(mutableProps.deckFonts).forEach((font, index) => {
+    collectStringProperty(font, 'href', references, `deckFonts.${index + 1}`);
+  });
   return references;
 }
 
@@ -166,11 +184,13 @@ function collectStringProperty(
   target: Record<string, unknown>,
   key: string,
   references: AssetReference[],
+  assetKey = key,
 ) {
   const value = target[key];
   if (typeof value !== 'string' || value.trim().length === 0) return;
 
   references.push({
+    key: assetKey,
     url: value.trim(),
     assign(localUrl) {
       target[key] = localUrl;
@@ -212,6 +232,7 @@ async function downloadRenderAsset(params: {
   assetsDir: string;
   fetchImpl: FetchLike;
   currentTotalBytes: number;
+  key: string;
 }): Promise<LocalAsset> {
   let lastError: unknown;
 
@@ -232,6 +253,7 @@ async function downloadRenderAssetOnce(params: {
   assetsDir: string;
   fetchImpl: FetchLike;
   currentTotalBytes: number;
+  key: string;
 }): Promise<LocalAsset> {
   const response = await params.fetchImpl(params.url, {
     signal: AbortSignal.timeout(ASSET_DOWNLOAD_TIMEOUT_MS),
@@ -284,12 +306,66 @@ async function downloadRenderAssetOnce(params: {
     byteLimit,
     createWriteStream(localPath),
   );
+  const stat = await fsp.stat(localPath);
 
   return {
+    key: params.key,
     id,
     localPath,
     contentType,
+    bytes: stat.size,
+    expectedBytes: Number.isFinite(contentLength) ? contentLength : null,
   };
+}
+
+async function validateDownloadedRenderAsset(asset: LocalAsset, mediaProbe: LocalMediaProbe): Promise<void> {
+  if (asset.bytes <= 0) {
+    throw new Error(`RENDER_ASSET_EMPTY: ${asset.key}`);
+  }
+  if (asset.expectedBytes !== null && asset.bytes !== asset.expectedBytes) {
+    throw new Error(`RENDER_ASSET_INCOMPLETE: ${asset.key} expected ${asset.expectedBytes} bytes, got ${asset.bytes}`);
+  }
+  if (!isProbeableMediaAsset(asset)) return;
+
+  try {
+    const result = await Promise.race([
+      mediaProbe({
+        key: asset.key,
+        localPath: asset.localPath,
+        contentType: asset.contentType,
+      }),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('LOCAL_MEDIA_PREFLIGHT_TIMEOUT')), LOCAL_MEDIA_PREFLIGHT_TIMEOUT_MS);
+      }),
+    ]);
+    if (!Number.isFinite(result.durationSeconds) || result.durationSeconds <= 0) {
+      throw new Error('LOCAL_MEDIA_PREFLIGHT_INVALID_DURATION');
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`RENDER_ASSET_PREFLIGHT_FAILED: ${asset.key}: ${message}`);
+  }
+}
+
+function isProbeableMediaAsset(asset: LocalAsset): boolean {
+  return /^audio\//i.test(asset.contentType) || /^video\//i.test(asset.contentType);
+}
+
+async function probeLocalMediaAsset(asset: {
+  localPath: string;
+}): Promise<LocalMediaProbeResult> {
+  const { ALL_FORMATS, FilePathSource, Input } = await import('mediabunny');
+  const input = new Input({
+    source: new FilePathSource(asset.localPath),
+    formats: ALL_FORMATS,
+  });
+
+  try {
+    const durationSeconds = await input.computeDuration();
+    return { durationSeconds };
+  } finally {
+    input.dispose();
+  }
 }
 
 function resolveAssetExtension(url: string, contentType: string): string {

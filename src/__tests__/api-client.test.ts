@@ -98,6 +98,23 @@ describe('SofliaWorkerApiClient', () => {
     assert.equal(requestBody?.maxConcurrentJobs, 4);
   });
 
+  it('sends active job ids in heartbeat payloads', async () => {
+    let requestBody: any = null;
+
+    globalThis.fetch = (async (_url, init) => {
+      requestBody = JSON.parse(String(init?.body || '{}')) as Record<string, unknown>;
+      return new Response(JSON.stringify({ worker: { id: 'worker-1' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const client = new SofliaWorkerApiClient('http://localhost:4000', 'swk_secret');
+    await client.heartbeat('BUSY', { activeJobIds: ['job-1', 'job-2'] });
+
+    assert.deepEqual(requestBody?.activeJobIds, ['job-1', 'job-2']);
+  });
+
   it('sends local recovery summary in heartbeat payloads', async () => {
     let requestBody: any = null;
 

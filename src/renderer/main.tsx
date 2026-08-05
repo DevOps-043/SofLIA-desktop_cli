@@ -628,7 +628,13 @@ function App() {
       if (event.state === 'completed' || event.state === 'error') {
         setCurrentJob((current) => mergeWorkerEvent(current, event));
       }
-      if (event.state === 'idle' || event.state === 'stopped') {
+      if (event.state === 'idle') {
+        setCurrentJob((current) => {
+          if (current && ['error', 'upload_pending', 'confirm_pending'].includes(current.state)) return current;
+          return null;
+        });
+      }
+      if (event.state === 'stopped') {
         setCurrentJob(null);
       }
     });
