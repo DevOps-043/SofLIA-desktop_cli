@@ -1,6 +1,7 @@
 import { createReadStream } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
+import { Transform } from 'node:stream';
 import { ensureBrowser, renderMedia, selectComposition } from '@remotion/renderer';
 import type { RenderMediaOnDownload, RenderMediaOnProgress } from '@remotion/renderer';
 import type { ClaimedRenderJob, SofliaWorkerApiClient } from './api-client.js';
@@ -29,6 +30,10 @@ type StreamingRequestInit = RequestInit & {
   duplex: 'half';
 };
 
+const UPLOAD_STREAM_BUFFER_BYTES = 1024 * 1024;
+const UPLOAD_PROGRESS_INTERVAL_MS = 5_000;
+const UPLOAD_PROGRESS_BYTE_INTERVAL = 8 * 1024 * 1024;
+
 function elapsedMsSince(startedAtMs: number): number {
   return Math.max(0, Date.now() - startedAtMs);
 }
@@ -42,6 +47,12 @@ function formatBytes(bytes: number | null): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${Math.round((bytes / 1024 / 1024) * 10) / 10} MB`;
+}
+
+function formatTransferProgress(downloadedBytes: number, expectedBytes: number | null): string {
+  if (expectedBytes === null || expectedBytes <= 0) return formatBytes(downloadedBytes);
+  const percent = Math.min(100, Math.round((downloadedBytes / expectedBytes) * 100));
+  return `${formatBytes(downloadedBytes)} / ${formatBytes(expectedBytes)}, ${percent}%`;
 }
 
 function describeAssetSource(source: string): string {
@@ -93,8 +104,8 @@ export async function renderClaimedJob(
       const isValidated = event.phase === 'validation_completed';
       const message = isValidated
         ? `Asset validado (${event.assetIndex}/${event.assetCount}): ${event.assetKey}`
-        : `Descargando asset (${event.assetIndex}/${event.assetCount}): ${event.assetKey} (${formatBytes(event.downloadedBytes)})`;
-      progressReporter.schedule(isValidated ? 20 : 19, message, 'asset_prepare', {
+        : `Descargando asset (${event.assetIndex}/${event.assetCount}): ${event.assetKey} (${formatTransferProgress(event.downloadedBytes, event.expectedBytes)})`;
+      progressReporter.schedule(19, message, 'asset_prepare', {
         assetKey: event.assetKey,
         assetIndex: event.assetIndex,
         assetCount: event.assetCount,
@@ -102,6 +113,8 @@ export async function renderClaimedJob(
         attempt: event.attempt,
         downloadedBytes: event.downloadedBytes,
         expectedBytes: event.expectedBytes,
+        elapsedMs: event.elapsedMs,
+        bytesPerSecond: event.bytesPerSecond,
       });
     },
   });
@@ -215,32 +228,37 @@ export async function renderClaimedJob(
       },
     );
   };
-  await renderMedia({
-    composition,
-    serveUrl,
-    codec: 'h264',
-    outputLocation: outputPath,
-    inputProps: preparedAssets.resolvedProps,
-    timeoutInMilliseconds: job.timeoutInMilliseconds,
-    binariesDirectory,
-    chromiumOptions,
-    concurrency: options.renderConcurrency,
-    hardwareAcceleration: options.hardwareAcceleration,
-    videoBitrate: options.videoBitrate,
-    onStart: ({ frameCount, parallelEncoding, resolvedConcurrency }) => {
-      progressReporter.schedule(30, 'Remotion inicio el render', 'render_start', {
-        frameCount,
-        parallelEncoding,
-        resolvedConcurrency,
-        requestedConcurrency: options.renderConcurrency,
-        hardwareAcceleration: options.hardwareAcceleration,
-        chromiumGl: options.chromiumGl,
-        videoBitrate: options.videoBitrate,
-      });
-    },
-    onDownload,
-    onProgress: onRenderProgress,
-  });
+  const stopRenderKeepAlive = progressReporter.startKeepAlive();
+  try {
+    await renderMedia({
+      composition,
+      serveUrl,
+      codec: 'h264',
+      outputLocation: outputPath,
+      inputProps: preparedAssets.resolvedProps,
+      timeoutInMilliseconds: job.timeoutInMilliseconds,
+      binariesDirectory,
+      chromiumOptions,
+      concurrency: options.renderConcurrency,
+      hardwareAcceleration: options.hardwareAcceleration,
+      videoBitrate: options.videoBitrate,
+      onStart: ({ frameCount, parallelEncoding, resolvedConcurrency }) => {
+        progressReporter.schedule(30, 'Remotion inicio el render', 'render_start', {
+          frameCount,
+          parallelEncoding,
+          resolvedConcurrency,
+          requestedConcurrency: options.renderConcurrency,
+          hardwareAcceleration: options.hardwareAcceleration,
+          chromiumGl: options.chromiumGl,
+          videoBitrate: options.videoBitrate,
+        });
+      },
+      onDownload,
+      onProgress: onRenderProgress,
+    });
+  } finally {
+    stopRenderKeepAlive();
+  }
   await progressReporter.report(86, 'Render y encoding terminados', 'render_complete', {
     elapsedMs: roundMs(elapsedMsSince(renderStartedAtMs)),
     totalElapsedMs: roundMs(elapsedMsSince(jobStartedAtMs)),
@@ -270,18 +288,53 @@ export async function renderClaimedJob(
   });
   try {
     options.localJobStore?.updateStage(job.jobId, 'uploading', 'upload');
+    let uploadedBytes = 0;
+    let lastReportedBytes = 0;
+    let lastReportedAtMs = Date.now();
+    const uploadProgressStream = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        uploadedBytes += chunk.length;
+        const now = Date.now();
+        if (
+          uploadedBytes - lastReportedBytes >= UPLOAD_PROGRESS_BYTE_INTERVAL
+          || now - lastReportedAtMs >= UPLOAD_PROGRESS_INTERVAL_MS
+        ) {
+          lastReportedBytes = uploadedBytes;
+          lastReportedAtMs = now;
+          progressReporter.schedule(
+            90,
+            `Subiendo video final (${formatTransferProgress(uploadedBytes, stat.size)})`,
+            'upload',
+            {
+              uploadedBytes,
+              totalBytes: stat.size,
+              elapsedMs: elapsedMsSince(uploadStartedAtMs),
+            },
+          );
+        }
+        callback(null, chunk);
+      },
+    });
+    const uploadBody = createReadStream(outputPath, {
+      highWaterMark: UPLOAD_STREAM_BUFFER_BYTES,
+    }).pipe(uploadProgressStream);
     const uploadRequest: StreamingRequestInit = {
       method: 'PUT',
       headers: {
         'content-type': 'video/mp4',
         'content-length': String(stat.size),
       },
-      body: createReadStream(outputPath) as unknown as BodyInit,
+      body: uploadBody as unknown as BodyInit,
       duplex: 'half',
     };
-    const uploadResponse = await fetch(job.outputUploadUrl, uploadRequest);
-    if (!uploadResponse.ok) {
-      throw new Error(`No se pudo subir el video final: HTTP ${uploadResponse.status}`);
+    const stopUploadKeepAlive = progressReporter.startKeepAlive();
+    try {
+      const uploadResponse = await fetch(job.outputUploadUrl, uploadRequest);
+      if (!uploadResponse.ok) {
+        throw new Error(`No se pudo subir el video final: HTTP ${uploadResponse.status}`);
+      }
+    } finally {
+      stopUploadKeepAlive();
     }
     options.localJobStore?.markUploadedPendingComplete(job.jobId);
     await progressReporter.report(95, 'Video final subido', 'upload_complete', {

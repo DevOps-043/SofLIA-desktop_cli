@@ -9,8 +9,12 @@ import { startLocalAssetServer } from './render-asset-server.js';
 
 const MAX_RENDER_ASSET_BYTES = 750 * 1024 * 1024;
 const MAX_TOTAL_RENDER_ASSET_BYTES = 2 * 1024 * 1024 * 1024;
-const ASSET_DOWNLOAD_TIMEOUT_MS = 60_000;
+// The limit is intentionally based on inactivity, not total wall-clock time.
+// Large videos can legitimately take several minutes on slower links as long as
+// bytes keep arriving.
+const ASSET_DOWNLOAD_IDLE_TIMEOUT_MS = 90_000;
 const ASSET_DOWNLOAD_ATTEMPTS = 2;
+const ASSET_DOWNLOAD_CONCURRENCY = 3;
 const ASSET_PROGRESS_INTERVAL_MS = 5_000;
 const ASSET_PROGRESS_BYTE_INTERVAL = 8 * 1024 * 1024;
 const LOCAL_MEDIA_PREFLIGHT_TIMEOUT_MS = 30_000;
@@ -115,6 +119,8 @@ export interface RenderAssetPreparationProgress {
   attempt: number;
   downloadedBytes: number;
   expectedBytes: number | null;
+  elapsedMs: number;
+  bytesPerSecond: number | null;
 }
 
 export interface PreparedRenderAssets {
@@ -130,6 +136,7 @@ export async function prepareRenderAssetsForJob(params: {
   resolvedProps: Record<string, unknown>;
   fetchImpl?: FetchLike;
   mediaProbe?: LocalMediaProbe;
+  assetDownloadIdleTimeoutMs?: number;
   onProgress?: (event: RenderAssetPreparationProgress) => void;
 }): Promise<PreparedRenderAssets> {
   const props = structuredClone(params.resolvedProps);
@@ -159,16 +166,17 @@ export async function prepareRenderAssetsForJob(params: {
     seenRemoteUrls.add(reference.url);
     return true;
   });
-  let assetBytes = 0;
+  const aggregateBudget = new AggregateDownloadBudget(MAX_TOTAL_RENDER_ASSET_BYTES);
 
-  for (const [index, reference] of uniqueRemoteReferences.entries()) {
+  await runWithConcurrency(uniqueRemoteReferences, ASSET_DOWNLOAD_CONCURRENCY, async (reference, index) => {
     const assetIndex = index + 1;
     const asset = await downloadRenderAsset({
       url: reference.url,
       assetsDir,
       fetchImpl,
-      currentTotalBytes: assetBytes,
+      aggregateBudget,
       key: reference.key,
+      idleTimeoutMs: normalizeIdleTimeoutMs(params.assetDownloadIdleTimeoutMs),
       onProgress: (event) => params.onProgress?.({
         ...event,
         assetIndex,
@@ -184,10 +192,13 @@ export async function prepareRenderAssetsForJob(params: {
       attempt: asset.attempt,
       downloadedBytes: asset.bytes,
       expectedBytes: asset.expectedBytes,
+      elapsedMs: 0,
+      bytesPerSecond: null,
     });
-    assetBytes += asset.bytes;
     downloadedByUrl.set(reference.url, asset);
-  }
+  });
+
+  const assetBytes = aggregateBudget.bytes;
 
   const server = await startLocalAssetServer({
     assets: [...downloadedByUrl.values()],
@@ -285,8 +296,9 @@ async function downloadRenderAsset(params: {
   url: string;
   assetsDir: string;
   fetchImpl: FetchLike;
-  currentTotalBytes: number;
+  aggregateBudget: AggregateDownloadBudget;
   key: string;
+  idleTimeoutMs: number;
   onProgress?: (event: Omit<RenderAssetPreparationProgress, 'assetIndex' | 'assetCount'>) => void;
 }): Promise<LocalAsset> {
   let lastError: unknown;
@@ -307,105 +319,216 @@ async function downloadRenderAssetOnce(params: {
   url: string;
   assetsDir: string;
   fetchImpl: FetchLike;
-  currentTotalBytes: number;
+  aggregateBudget: AggregateDownloadBudget;
   key: string;
   attempt: number;
+  idleTimeoutMs: number;
   onProgress?: (event: Omit<RenderAssetPreparationProgress, 'assetIndex' | 'assetCount'>) => void;
 }): Promise<LocalAsset> {
-  const response = await params.fetchImpl(params.url, {
-    signal: AbortSignal.timeout(ASSET_DOWNLOAD_TIMEOUT_MS),
-  });
-
-  if (!response.ok || !response.body) {
-    throw new Error(`RENDER_ASSET_DOWNLOAD_FAILED: HTTP ${response.status}`);
-  }
-
-  const contentLength = parseContentLength(response.headers.get('content-length'));
-  if (contentLength !== null && contentLength > MAX_RENDER_ASSET_BYTES) {
-    throw new Error('RENDER_ASSET_TOO_LARGE');
-  }
-  if (contentLength !== null && params.currentTotalBytes + contentLength > MAX_TOTAL_RENDER_ASSET_BYTES) {
-    throw new Error('RENDER_ASSET_TOTAL_TOO_LARGE');
-  }
-
-  const responseContentType = response.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
-  const extension = resolveAssetExtension(params.url, responseContentType);
-  if (!ALLOWED_EXTENSIONS.has(extension) && extension !== '.css') {
-    throw new Error(`RENDER_ASSET_UNSUPPORTED_TYPE: ${responseContentType || extension}`);
-  }
-  const contentType = resolveEffectiveContentType(responseContentType, extension);
-  validateAssetContentType(params.key, extension, contentType);
-
-  const id = `${crypto.createHash('sha256').update(params.url).digest('hex').slice(0, 24)}${extension}`;
-  const localPath = path.join(params.assetsDir, id);
-  const resolvedAssetsDir = path.resolve(params.assetsDir);
-  const resolvedLocalPath = path.resolve(localPath);
-  if (!resolvedLocalPath.startsWith(resolvedAssetsDir + path.sep)) {
-    throw new Error('RENDER_ASSET_PATH_TRAVERSAL');
-  }
-
+  const activityTimeout = createActivityTimeout(params.idleTimeoutMs);
+  let localPath: string | null = null;
   let downloadedBytes = 0;
-  let lastReportedBytes = 0;
-  let lastReportedAtMs = Date.now();
-  params.onProgress?.({
-    phase: 'download_started',
-    assetKey: params.key,
-    attempt: params.attempt,
-    downloadedBytes: 0,
-    expectedBytes: contentLength,
-  });
-  const byteLimit = new Transform({
-    transform(chunk: Buffer, _encoding, callback) {
-      downloadedBytes += chunk.length;
-      if (downloadedBytes > MAX_RENDER_ASSET_BYTES) {
-        callback(new Error('RENDER_ASSET_TOO_LARGE'));
-        return;
-      }
-      if (params.currentTotalBytes + downloadedBytes > MAX_TOTAL_RENDER_ASSET_BYTES) {
-        callback(new Error('RENDER_ASSET_TOTAL_TOO_LARGE'));
-        return;
-      }
-      const now = Date.now();
-      if (
-        downloadedBytes - lastReportedBytes >= ASSET_PROGRESS_BYTE_INTERVAL
-        || now - lastReportedAtMs >= ASSET_PROGRESS_INTERVAL_MS
-      ) {
-        lastReportedBytes = downloadedBytes;
-        lastReportedAtMs = now;
-        params.onProgress?.({
-          phase: 'download_progress',
-          assetKey: params.key,
-          attempt: params.attempt,
-          downloadedBytes,
-          expectedBytes: contentLength,
-        });
-      }
-      callback(null, chunk);
-    },
-  });
 
-  await pipeline(
-    Readable.fromWeb(response.body as NodeReadableStream),
-    byteLimit,
-    createWriteStream(localPath),
-  );
-  const stat = await fsp.stat(localPath);
-  params.onProgress?.({
-    phase: 'download_completed',
-    assetKey: params.key,
-    attempt: params.attempt,
-    downloadedBytes: stat.size,
-    expectedBytes: contentLength,
-  });
+  try {
+    const response = await params.fetchImpl(params.url, {
+      signal: activityTimeout.signal,
+    });
+    activityTimeout.refresh();
 
+    if (!response.ok || !response.body) {
+      throw new Error(`RENDER_ASSET_DOWNLOAD_FAILED: HTTP ${response.status}`);
+    }
+
+    const contentLength = parseContentLength(response.headers.get('content-length'));
+    if (contentLength !== null && contentLength > MAX_RENDER_ASSET_BYTES) {
+      throw new Error('RENDER_ASSET_TOO_LARGE');
+    }
+
+    const responseContentType = response.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
+    const extension = resolveAssetExtension(params.url, responseContentType);
+    if (!ALLOWED_EXTENSIONS.has(extension) && extension !== '.css') {
+      throw new Error(`RENDER_ASSET_UNSUPPORTED_TYPE: ${responseContentType || extension}`);
+    }
+    const contentType = resolveEffectiveContentType(responseContentType, extension);
+    validateAssetContentType(params.key, extension, contentType);
+
+    const id = `${crypto.createHash('sha256').update(params.url).digest('hex').slice(0, 24)}${extension}`;
+    localPath = path.join(params.assetsDir, id);
+    const resolvedAssetsDir = path.resolve(params.assetsDir);
+    const resolvedLocalPath = path.resolve(localPath);
+    if (!resolvedLocalPath.startsWith(resolvedAssetsDir + path.sep)) {
+      throw new Error('RENDER_ASSET_PATH_TRAVERSAL');
+    }
+
+    let lastReportedBytes = 0;
+    let lastReportedAtMs = Date.now();
+    const downloadStartedAtMs = Date.now();
+    params.onProgress?.({
+      phase: 'download_started',
+      assetKey: params.key,
+      attempt: params.attempt,
+      downloadedBytes: 0,
+      expectedBytes: contentLength,
+      elapsedMs: 0,
+      bytesPerSecond: null,
+    });
+    const byteLimit = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        activityTimeout.refresh();
+        if (downloadedBytes + chunk.length > MAX_RENDER_ASSET_BYTES) {
+          callback(new Error('RENDER_ASSET_TOO_LARGE'));
+          return;
+        }
+        try {
+          params.aggregateBudget.reserve(chunk.length);
+        } catch (error) {
+          callback(error instanceof Error ? error : new Error(String(error)));
+          return;
+        }
+        downloadedBytes += chunk.length;
+        const now = Date.now();
+        if (
+          downloadedBytes - lastReportedBytes >= ASSET_PROGRESS_BYTE_INTERVAL
+          || now - lastReportedAtMs >= ASSET_PROGRESS_INTERVAL_MS
+        ) {
+          lastReportedBytes = downloadedBytes;
+          lastReportedAtMs = now;
+          params.onProgress?.({
+            phase: 'download_progress',
+            assetKey: params.key,
+            attempt: params.attempt,
+            downloadedBytes,
+            expectedBytes: contentLength,
+            elapsedMs: now - downloadStartedAtMs,
+            bytesPerSecond: calculateBytesPerSecond(downloadedBytes, now - downloadStartedAtMs),
+          });
+        }
+        callback(null, chunk);
+      },
+    });
+
+    await pipeline(
+      Readable.fromWeb(response.body as NodeReadableStream),
+      byteLimit,
+      createWriteStream(localPath),
+      { signal: activityTimeout.signal },
+    );
+    const stat = await fsp.stat(localPath);
+    const downloadElapsedMs = Date.now() - downloadStartedAtMs;
+    params.onProgress?.({
+      phase: 'download_completed',
+      assetKey: params.key,
+      attempt: params.attempt,
+      downloadedBytes: stat.size,
+      expectedBytes: contentLength,
+      elapsedMs: downloadElapsedMs,
+      bytesPerSecond: calculateBytesPerSecond(stat.size, downloadElapsedMs),
+    });
+
+    return {
+      key: params.key,
+      id,
+      localPath,
+      contentType,
+      bytes: stat.size,
+      expectedBytes: contentLength,
+      attempt: params.attempt,
+    };
+  } catch (error) {
+    params.aggregateBudget.release(downloadedBytes);
+    if (localPath) {
+      await fsp.rm(localPath, { force: true }).catch(() => undefined);
+    }
+    if (activityTimeout.didExpire()) {
+      throw new Error(
+        `RENDER_ASSET_DOWNLOAD_STALLED: ${params.key} sin datos durante ${params.idleTimeoutMs} ms`,
+        { cause: error },
+      );
+    }
+    throw error;
+  } finally {
+    activityTimeout.clear();
+  }
+}
+
+function calculateBytesPerSecond(bytes: number, elapsedMs: number): number | null {
+  if (bytes <= 0 || elapsedMs <= 0) return null;
+  return Math.round(bytes / (elapsedMs / 1000));
+}
+
+class AggregateDownloadBudget {
+  private downloadedBytes = 0;
+
+  constructor(private readonly maximumBytes: number) {}
+
+  get bytes(): number {
+    return this.downloadedBytes;
+  }
+
+  reserve(bytes: number): void {
+    if (this.downloadedBytes + bytes > this.maximumBytes) {
+      throw new Error('RENDER_ASSET_TOTAL_TOO_LARGE');
+    }
+    this.downloadedBytes += bytes;
+  }
+
+  release(bytes: number): void {
+    this.downloadedBytes = Math.max(0, this.downloadedBytes - Math.max(0, bytes));
+  }
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  operation: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  let nextIndex = 0;
+  const workerCount = Math.min(items.length, Math.max(1, Math.floor(concurrency)));
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      await operation(items[index], index);
+    }
+  });
+  const results = await Promise.allSettled(workers);
+  const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failure) throw failure.reason;
+}
+
+function normalizeIdleTimeoutMs(value: number | undefined): number {
+  if (value === undefined) return ASSET_DOWNLOAD_IDLE_TIMEOUT_MS;
+  if (!Number.isFinite(value)) return ASSET_DOWNLOAD_IDLE_TIMEOUT_MS;
+  return Math.max(1, Math.round(value));
+}
+
+function createActivityTimeout(timeoutMs: number): {
+  signal: AbortSignal;
+  refresh(): void;
+  clear(): void;
+  didExpire(): boolean;
+} {
+  const controller = new AbortController();
+  let timer: NodeJS.Timeout | null = null;
+  let expired = false;
+  const clear = () => {
+    if (!timer) return;
+    clearTimeout(timer);
+    timer = null;
+  };
+  const refresh = () => {
+    clear();
+    timer = setTimeout(() => {
+      expired = true;
+      controller.abort();
+    }, timeoutMs);
+  };
+  refresh();
   return {
-    key: params.key,
-    id,
-    localPath,
-    contentType,
-    bytes: stat.size,
-    expectedBytes: contentLength,
-    attempt: params.attempt,
+    signal: controller.signal,
+    refresh,
+    clear,
+    didExpire: () => expired,
   };
 }
 
@@ -420,22 +543,35 @@ async function validateDownloadedRenderAsset(asset: LocalAsset, mediaProbe: Loca
   if (!isProbeableMediaAsset(asset)) return;
 
   try {
-    const result = await Promise.race([
+    const result = await withTimeout(
       mediaProbe({
         key: asset.key,
         localPath: asset.localPath,
         contentType: asset.contentType,
       }),
-      new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('LOCAL_MEDIA_PREFLIGHT_TIMEOUT')), LOCAL_MEDIA_PREFLIGHT_TIMEOUT_MS);
-      }),
-    ]);
+      LOCAL_MEDIA_PREFLIGHT_TIMEOUT_MS,
+      'LOCAL_MEDIA_PREFLIGHT_TIMEOUT',
+    );
     if (!Number.isFinite(result.durationSeconds) || result.durationSeconds <= 0) {
       throw new Error('LOCAL_MEDIA_PREFLIGHT_INVALID_DURATION');
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`RENDER_ASSET_PREFLIGHT_FAILED: ${asset.key}: ${message}`);
+  }
+}
+
+async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

@@ -5,14 +5,21 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SofliaWorkerApiClient } from './api-client.js';
-import { clearWorkerLink, loadConfig, loadOptionalConfig, saveConfig, saveConfigSettings } from './config.js';
+import {
+  clearWorkerLink,
+  getRuntimeWorkerPowerProfile,
+  loadConfig,
+  loadOptionalConfig,
+  saveConfig,
+  saveConfigSettings,
+} from './config.js';
 import { normalizeLocalRetentionPolicy } from './local-job-state.js';
 import { LocalJobStore } from './local-job-store.js';
 import { logError, sanitizeLog } from './logging.js';
 import { configureWritableWorkingDirectory, getAppDataDir, getConfigPath } from './paths.js';
 import { ResourceMonitor } from './resource-monitor.js';
 import type { ResourceActiveJob } from './shared/resource-metrics.js';
-import { DEFAULT_WORKER_POWER_PROFILE, getWorkerPowerProfile } from './shared/worker-capacity.js';
+import { getWorkerPowerProfile } from './shared/worker-capacity.js';
 import type { AppUpdateState } from './shared/update-types.js';
 import type { WorkerRuntimeEvent, WorkerRuntimeState } from './shared/worker-events.js';
 import { getWorkerStartMessage, getWorkerStatusMessage } from './worker-link-state.js';
@@ -381,7 +388,7 @@ async function getStatus() {
     };
   } catch (error) {
     const config = await loadOptionalConfig();
-    const powerProfile = getWorkerPowerProfile(config.powerProfile || DEFAULT_WORKER_POWER_PROFILE);
+    const powerProfile = getRuntimeWorkerPowerProfile(config.powerProfile);
     const localRecovery = await readLocalRecoverySummary();
     closeToTray = config.closeToTray !== false;
     return {
@@ -520,7 +527,8 @@ async function setApiUrl(_event: Electron.IpcMainInvokeEvent, rawApiUrl: string)
 }
 
 async function setPowerProfile(_event: Electron.IpcMainInvokeEvent, rawPowerProfile: string) {
-  const powerProfile = getWorkerPowerProfile(String(rawPowerProfile || ''));
+  const selectedPowerProfile = getWorkerPowerProfile(String(rawPowerProfile || ''));
+  const powerProfile = getRuntimeWorkerPowerProfile(selectedPowerProfile.id);
   const shouldRestart = Boolean(workerAbortController);
   if (shouldRestart) {
     await stopWorker();

@@ -3,7 +3,7 @@ import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { loadConfig, saveConfig, saveConfigSettings } from '../config.js';
+import { getRuntimeWorkerPowerProfile, loadConfig, saveConfig, saveConfigSettings } from '../config.js';
 import { configureWritableWorkingDirectory, getWorkspaceDir } from '../paths.js';
 
 const originalAppData = process.env.APPDATA;
@@ -39,7 +39,7 @@ describe('worker config', () => {
     assert.equal(config.token, 'swk_secret');
     assert.equal(config.powerProfile, 'high');
     assert.equal(config.maxConcurrentJobs, 4);
-    assert.equal(config.renderConcurrency, 4);
+    assert.equal(config.renderConcurrency, getRuntimeWorkerPowerProfile('high').renderConcurrency);
     assert.equal(config.hardwareAcceleration, 'if-possible');
     assert.equal(config.chromiumGl, 'angle');
     assert.equal(config.videoBitrate, '8M');

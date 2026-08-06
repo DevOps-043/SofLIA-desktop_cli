@@ -64,11 +64,14 @@ export async function readWorkerHardwareSnapshot(): Promise<WorkerHardwareSnapsh
   }
 
   const cpus = os.cpus();
+  const availableParallelism = typeof os.availableParallelism === 'function'
+    ? os.availableParallelism()
+    : cpus.length;
   return {
     platform: process.platform,
     arch: process.arch,
     cpuModel: sanitizeText(cpus[0]?.model, 160),
-    cpuLogicalThreads: Math.max(1, cpus.length || 1),
+    cpuLogicalThreads: Math.max(1, availableParallelism || 1),
     memoryTotalBytes: Math.max(0, os.totalmem()),
     gpuAdapters,
   };

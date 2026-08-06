@@ -1,9 +1,10 @@
 import * as fsp from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { getConfigPath } from './paths.js';
 import { normalizeLocalRetentionPolicy } from './local-job-state.js';
 import type { LocalCleanupPolicy } from './local-job-state.js';
-import { DEFAULT_WORKER_POWER_PROFILE, getWorkerPowerProfile } from './shared/worker-capacity.js';
+import { DEFAULT_WORKER_POWER_PROFILE, resolveWorkerPowerProfile } from './shared/worker-capacity.js';
 import type { WorkerChromiumGl, WorkerHardwareAcceleration, WorkerPowerProfile } from './shared/worker-capacity.js';
 
 export interface WorkerConfig {
@@ -56,7 +57,7 @@ export async function loadConfig(): Promise<WorkerConfig> {
   if (!parsed.apiUrl || !parsed.token) {
     throw new Error('Config incompleta. Vincula este equipo desde la app o ejecuta link con un codigo temporal.');
   }
-  const powerProfile = getWorkerPowerProfile(parsed.powerProfile || DEFAULT_WORKER_POWER_PROFILE);
+  const powerProfile = getRuntimeWorkerPowerProfile(parsed.powerProfile);
 
   return {
     apiUrl: parsed.apiUrl.replace(/\/+$/, ''),
@@ -70,4 +71,14 @@ export async function loadConfig(): Promise<WorkerConfig> {
     videoBitrate: powerProfile.videoBitrate,
     localRetentionPolicy: normalizeLocalRetentionPolicy(parsed.localRetentionPolicy),
   };
+}
+
+export function getRuntimeWorkerPowerProfile(profile?: string) {
+  const availableParallelism = typeof os.availableParallelism === 'function'
+    ? os.availableParallelism()
+    : os.cpus().length;
+  return resolveWorkerPowerProfile(profile || DEFAULT_WORKER_POWER_PROFILE, {
+    cpuLogicalThreads: Math.max(1, availableParallelism || 1),
+    memoryTotalBytes: Math.max(0, os.totalmem()),
+  });
 }

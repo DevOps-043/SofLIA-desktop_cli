@@ -4,6 +4,12 @@ import type { RenderProgressEvent } from './shared/worker-events.js';
 
 export class RenderProgressReporter {
   private queue: Promise<void> = Promise.resolve();
+  private lastReport: {
+    percent: number;
+    message: string;
+    stage: string;
+    detail?: Record<string, unknown>;
+  } | null = null;
 
   constructor(
     private readonly client: SofliaWorkerApiClient,
@@ -29,12 +35,28 @@ export class RenderProgressReporter {
     void this.enqueue(percent, message, stage, detail).catch(() => undefined);
   }
 
+  startKeepAlive(intervalMs = 45_000): () => void {
+    const timer = setInterval(() => {
+      const lastReport = this.lastReport;
+      if (!lastReport) return;
+      this.schedule(
+        lastReport.percent,
+        lastReport.message,
+        lastReport.stage,
+        { ...lastReport.detail, keepAlive: true },
+      );
+    }, Math.max(1, Math.round(intervalMs)));
+    timer.unref?.();
+    return () => clearInterval(timer);
+  }
+
   private enqueue(
     percent: number,
     message: string,
     stage: string,
     detail?: Record<string, unknown>,
   ): Promise<void> {
+    this.lastReport = { percent, message, stage, detail };
     const operation = this.queue.then(async () => {
       this.onProgress?.({
         jobId: this.job.jobId,

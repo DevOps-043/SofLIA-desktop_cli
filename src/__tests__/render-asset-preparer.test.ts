@@ -115,6 +115,75 @@ describe('render asset preparer', () => {
     }
   });
 
+  it('allows a download to exceed the idle timeout in total when bytes keep arriving', async () => {
+    const outputDir = createOutputDir('slow-active');
+    let nextByte = 0;
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        await new Promise((resolve) => setTimeout(resolve, 8));
+        if (nextByte >= 8) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(Uint8Array.of(nextByte));
+        nextByte += 1;
+      },
+    });
+    const prepared = await prepareRenderAssetsForJob({
+      jobId: 'job-slow-active',
+      outputDir,
+      resolvedProps: {
+        avatarVideoUrl: 'https://cdn.example.test/avatar.mp4',
+      },
+      fetchImpl: (async () => new Response(body, {
+        status: 200,
+        headers: {
+          'content-length': '8',
+          'content-type': 'video/mp4',
+        },
+      })) as typeof fetch,
+      mediaProbe: successfulMediaProbe,
+      assetDownloadIdleTimeoutMs: 25,
+    });
+
+    try {
+      assert.equal(prepared.assetBytes, 8);
+    } finally {
+      await prepared.close();
+    }
+  });
+
+  it('aborts and retries a download only after the response stops producing bytes', async () => {
+    let fetchCount = 0;
+    await assert.rejects(
+      () => prepareRenderAssetsForJob({
+        jobId: 'job-stalled',
+        outputDir: createOutputDir('stalled'),
+        resolvedProps: {
+          avatarVideoUrl: 'https://cdn.example.test/avatar.mp4',
+        },
+        fetchImpl: (async () => {
+          fetchCount += 1;
+          return new Response(new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(Uint8Array.of(1));
+            },
+          }), {
+            status: 200,
+            headers: {
+              'content-length': '2',
+              'content-type': 'video/mp4',
+            },
+          });
+        }) as typeof fetch,
+        mediaProbe: successfulMediaProbe,
+        assetDownloadIdleTimeoutMs: 15,
+      }),
+      /RENDER_ASSET_DOWNLOAD_STALLED: avatarVideoUrl/,
+    );
+    assert.equal(fetchCount, 2);
+  });
+
   it('infers a media content type from a known extension when storage returns octet-stream', async () => {
     const outputDir = createOutputDir('content-type');
     let probedContentType: string | undefined;
@@ -216,6 +285,40 @@ describe('render asset preparer', () => {
       const blockedUrl = String(props.avatarVideoUrl).replace(/\/assets\/[^/]+\//, '/assets/wrong-token/');
       const response = await fetch(blockedUrl);
       assert.equal(response.status, 404);
+    } finally {
+      await prepared.close();
+    }
+  });
+
+  it('downloads independent assets concurrently with a bounded worker pool', async () => {
+    const outputDir = createOutputDir('bounded-concurrency');
+    let activeFetches = 0;
+    let maximumActiveFetches = 0;
+    const prepared = await prepareRenderAssetsForJob({
+      jobId: 'job-bounded-concurrency',
+      outputDir,
+      resolvedProps: {
+        slides: Array.from({ length: 5 }, (_, index) => ({
+          kind: 'image',
+          index,
+          url: `https://cdn.example.test/slide-${index}.png`,
+        })),
+      },
+      fetchImpl: (async () => {
+        activeFetches += 1;
+        maximumActiveFetches = Math.max(maximumActiveFetches, activeFetches);
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        activeFetches -= 1;
+        return new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), {
+          status: 200,
+          headers: { 'content-type': 'image/png' },
+        });
+      }) as typeof fetch,
+    });
+
+    try {
+      assert.equal(prepared.assetCount, 5);
+      assert.equal(maximumActiveFetches, 3);
     } finally {
       await prepared.close();
     }

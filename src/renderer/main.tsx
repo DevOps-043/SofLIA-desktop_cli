@@ -992,7 +992,7 @@ function App() {
                     <span className="power-card-summary">{profile.headline}</span>
                     <span className="power-card-metrics">
                       <span>{profile.maxConcurrentJobs} jobs</span>
-                      <span>{profile.renderConcurrency} hilos render</span>
+                      <span>{profile.id === 'light' ? '1 hilo render' : 'Render adaptativo'}</span>
                       <span>{profile.hardwareAcceleration === 'disable' ? 'GPU off' : 'GPU auto'}</span>
                       <span>GL {profile.chromiumGl || 'auto'}</span>
                     </span>

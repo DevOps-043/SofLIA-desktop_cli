@@ -47,4 +47,30 @@ describe('RenderProgressReporter', () => {
     assert.deepEqual(localPercents, [10, 20, 30]);
     assert.deepEqual(details[0], { assetKey: 'voiceAudioUrl' });
   });
+
+  it('renews the current render stage while Remotion has no progress callback', async () => {
+    const reports: Array<{ percent: number; detail?: Record<string, unknown> }> = [];
+    const client = {
+      progress: async (
+        _jobId: string,
+        percent: number,
+        _message: string,
+        _stage: string,
+        detail?: Record<string, unknown>,
+      ) => {
+        reports.push({ percent, detail });
+        return {};
+      },
+    } as unknown as SofliaWorkerApiClient;
+    const reporter = new RenderProgressReporter(client, JOB);
+
+    await reporter.report(31, 'Renderizando fotogramas', 'render_frames');
+    const stopKeepAlive = reporter.startKeepAlive(10);
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    stopKeepAlive();
+    await reporter.report(32, 'Render reanudado', 'render_frames');
+
+    assert.ok(reports.some((report) => report.percent === 31 && report.detail?.keepAlive === true));
+    assert.equal(reports.at(-1)?.percent, 32);
+  });
 });

@@ -4,9 +4,9 @@ Aplicacion de escritorio para renderizar videos de SofLIA - Engine usando la com
 
 ## Version actual
 
-### v0.3.3
+### v0.3.7
 
-Patch enfocada en validar assets de audio/video descargados antes de renderizar, reportar jobs activos en heartbeats del worker, conservar estados recuperables visibles en la UI cuando el loop queda idle, limpiar workspaces temporales sin borrar artefactos recuperables, corregir el orden de recuperacion para subir/confirmar antes de aplicar retencion local, preparar assets remotos de render como archivos locales servidos desde `127.0.0.1` con token por job, previews externos de plantilla con poster PNG y video corto MP4, cierre confiable de runs de telemetria aunque el envio de samples falle temporalmente, captura del arbol global de procesos cuando existe un unico run abierto aunque el worker este en reposo, trazabilidad confiable de la version instalada del worker, reintentos confiables de telemetria pendiente cuando el worker queda idle, telemetria fina de rendimiento del render local, atribucion global de procesos del sistema, prevencion de corridas fantasma al finalizar jobs, visibilidad de fases internas de Remotion, subida/checksum por streaming para artefactos grandes, recuperacion local de jobs, retencion configurable, reintentos seguros de subida/confirmacion, builds de plantilla, previews, experiencia de escritorio, actualizaciones silenciosas y cache escribible de Remotion en equipos instalados.
+Patch enfocada en videos largos y rendimiento heterogeneo: las descargas ya no vencen por tiempo total mientras sigan recibiendo datos, los assets se descargan con concurrencia acotada y presupuesto global, el render renueva su lease aunque Remotion tarde en emitir progreso y la concurrencia efectiva se calcula con CPU y RAM disponibles. Conserva las validaciones locales, servidor de assets con rangos, telemetria por etapa, recuperacion de artefactos, subida por streaming y controles de seguridad existentes.
 
 Incluye:
 
@@ -24,12 +24,17 @@ Incluye:
 - Progreso visible del job actual: job, composicion, etapa y porcentaje.
 - Telemetria de rendimiento por fase: descarga/cache de bundle, preparacion de Chromium, seleccion de composicion, render de frames, encoding, muxing, checksum y upload.
 - Preparacion local de assets remotos conocidos antes de renderizar para reducir fallos de Remotion por URLs externas inestables.
+- Descargas con timeout por inactividad y no por duracion total, compatibles con videos grandes y enlaces lentos.
+- Hasta tres descargas simultaneas con presupuesto agregado de 2 GB y limite individual de 750 MB.
 - Preflight local de medios descargados con verificacion de bytes y duracion antes de pasar a Remotion.
 - Heartbeat con ids de jobs activos para mejorar visibilidad del backend/control-plane.
 - Cierre remoto del run de telemetria independiente del envio de samples, para evitar runs colgados en `claim`.
 - Captura del arbol global de procesos del sistema en snapshots sin job activo cuando hay un unico run abierto.
 - Detalle de Remotion en UI: concurrencia solicitada/resuelta, encoding paralelo, frames renderizados/codificados, assets descargados y tiempos por etapa.
+- Perfiles de potencia adaptativos a nucleos logicos y memoria disponible, sin exceder el limite aceptado por Remotion.
+- Renovacion periodica del lease durante renders sin callbacks para evitar falsos timeouts del backend.
 - Checksum y subida de MP4 mediante streams para reducir picos de memoria en videos pesados.
+- Progreso de subida por bytes con buffer de 1 MB y lease renovado durante enlaces lentos.
 - Reintentos de subida recuperables tambien mediante streams.
 - Compatibilidad con jobs de build y preview de plantillas.
 - Generacion de previews externos de plantilla con poster PNG y video MP4 corto cuando el backend entrega URLs para ambos artefactos.
@@ -140,9 +145,9 @@ GitHub Actions genera instaladores desde:
 .github/workflows/desktop-installers.yml
 ```
 
-El workflow valida que el tag coincida con la version de `package.json`. Para esta publicacion la version esperada es `0.3.3`, por lo tanto el tag debe ser `v0.3.3`.
+El workflow valida que el tag coincida con la version de `package.json`. Para esta publicacion la version esperada es `0.3.7`, por lo tanto el tag debe ser `v0.3.7`.
 
-### Comandos para subir v0.3.3
+### Comandos para subir v0.3.7
 
 Revisar estado:
 
@@ -165,7 +170,7 @@ git add .
 Crear commit:
 
 ```powershell
-git commit -m "Release v0.3.3 worker update"
+git commit -m "Release v0.3.7 worker update"
 ```
 
 Subir rama actual:
@@ -177,13 +182,13 @@ git push origin HEAD
 Crear tag:
 
 ```powershell
-git tag v0.3.3
+git tag v0.3.7
 ```
 
 Subir tag:
 
 ```powershell
-git push origin v0.3.3
+git push origin v0.3.7
 ```
 
 Al subir un tag `v*`, el workflow crea un GitHub Release y adjunta instaladores para Windows, macOS y Linux.
@@ -198,7 +203,7 @@ https://github.com/DevOps-043/SofLIA-desktop_cli/releases/latest/download/SofLIA
 
 ## Firma y notarizacion macOS
 
-Por ahora el workflow no exige secrets de GitHub para macOS. Esto permite publicar la v0.3.3 sin bloquear el release.
+Por ahora el workflow no exige secrets de GitHub para macOS. Esto permite publicar la v0.3.7 sin bloquear el release.
 
 Cuando decidamos activar firma y notarizacion, necesitaremos configurar:
 
