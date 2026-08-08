@@ -621,11 +621,11 @@ function App() {
       if (event.state === 'claiming' || event.state === 'rendering' || event.state === 'starting') {
         setStatus((current) => ({ ...current, running: true }));
       }
-      if (event.state === 'claiming' || event.state === 'rendering') {
+      if (['claiming', 'rendering', 'recovering', 'upload_pending', 'confirm_pending', 'error'].includes(event.state)) {
         setCurrentJob((current) => mergeWorkerEvent(current, event));
         if (getEventScope(event) === 'bundle') setActiveTab('bundle');
       }
-      if (event.state === 'completed' || event.state === 'error') {
+      if (event.state === 'completed') {
         setCurrentJob((current) => mergeWorkerEvent(current, event));
       }
       if (event.state === 'idle') {

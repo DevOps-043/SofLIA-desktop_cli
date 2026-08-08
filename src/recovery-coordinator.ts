@@ -133,6 +133,18 @@ export class RecoveryCoordinator {
       const refreshed = this.store.listRecoverableJobs(50).find((item) => item.jobId === job.jobId) || job;
       await this.applyCleanup(refreshed);
     } catch (error) {
+      if (isTerminalRemoteCompletionError(error)) {
+        const message = 'SofLIA ya no acepta confirmar este job porque fue cancelado o termino en otro estado. El archivo local se conserva para revision.';
+        this.store.markNonRecoverableFailure(job.jobId, 'REMOTE_JOB_NOT_RECOVERABLE', message);
+        this.events.onEvent?.({
+          state: 'error',
+          message,
+          jobId: job.jobId,
+          jobType: job.jobType,
+          stage: 'remote_job_not_recoverable',
+        });
+        return;
+      }
       if (job.localStatus === 'artifact_ready' || job.localStatus === 'upload_failed') {
         this.store.markUploadFailed(job.jobId, error);
       } else {
@@ -157,6 +169,11 @@ export class RecoveryCoordinator {
       stage: 'cleanup',
     });
   }
+}
+
+function isTerminalRemoteCompletionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /HTTP 409:.*JOB_(?:NOT_CLAIM(?:ABLE|EABLE)|ALREADY_COMPLETED_WITH_DIFFERENT_OUTPUT|FORBIDDEN_FOR_WORKER|TYPE_NOT_SUPPORTED|PROVIDER_NOT_DESKTOP_WORKER)/i.test(message);
 }
 
 function contentTypeForJob(job: LocalJobRecord): string {

@@ -98,4 +98,49 @@ describe('RecoveryCoordinator', () => {
 
     store.close();
   });
+
+  it('stops retrying a locally retained artifact when Engine rejects a terminal job', async () => {
+    const store = createTestStore();
+    await store.initialize();
+    const artifactDir = path.join(getWorkspaceDir(), 'renders', 'cancelled-job');
+    const artifactPath = path.join(artifactDir, 'output.mp4');
+    await fsp.mkdir(artifactDir, { recursive: true });
+    await fsp.writeFile(artifactPath, 'video');
+
+    store.upsertClaimedJob({
+      jobId: 'cancelled-job',
+      jobType: 'render',
+      remoteTable: localJobTypeToRemoteTable('render'),
+      localStatus: 'claimed',
+      stage: 'claim',
+      cleanupPolicy: 'keep_all',
+      outputStoragePath: 'completed/cancelled-job.mp4',
+    });
+    store.markArtifactReady({
+      jobId: 'cancelled-job',
+      artifactPath,
+      artifactChecksum: 'b'.repeat(64),
+      artifactSizeBytes: 5,
+      outputStoragePath: 'completed/cancelled-job.mp4',
+    });
+    store.markUploadedPendingComplete('cancelled-job');
+
+    let completeCount = 0;
+    const recovery = new RecoveryCoordinator(store, {
+      refreshUploadUrl: async () => {
+        throw new Error('refresh should not be called for an uploaded artifact');
+      },
+      complete: async () => {
+        completeCount += 1;
+        throw new Error('HTTP 409: {"error":"JOB_NOT_CLAIMABLE"}');
+      },
+    });
+
+    await recovery.recoverPendingJobs();
+
+    assert.equal(completeCount, 1);
+    assert.equal(store.getJob('cancelled-job')?.localStatus, 'failed_non_recoverable');
+    await fsp.access(artifactPath);
+    store.close();
+  });
 });

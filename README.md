@@ -6,7 +6,7 @@ Aplicacion de escritorio para renderizar videos de SofLIA - Engine usando la com
 
 ### v0.3.7
 
-Patch enfocada en videos largos y rendimiento heterogeneo: las descargas ya no vencen por tiempo total mientras sigan recibiendo datos, los assets se descargan con concurrencia acotada y presupuesto global, el render renueva su lease aunque Remotion tarde en emitir progreso y la concurrencia efectiva se calcula con CPU y RAM disponibles. Conserva las validaciones locales, servidor de assets con rangos, telemetria por etapa, recuperacion de artefactos, subida por streaming y controles de seguridad existentes.
+Patch enfocada en recuperacion local, videos largos y rendimiento heterogeneo: el worker deja de reintentar indefinidamente cuando Engine rechaza como terminal la confirmacion de un job, las descargas ya no vencen por tiempo total mientras sigan recibiendo datos, los assets se descargan con concurrencia acotada y presupuesto global, el render renueva su lease aunque Remotion tarde en emitir progreso y la concurrencia efectiva se calcula con CPU y RAM disponibles. Conserva las validaciones locales, servidor de assets con rangos, telemetria por etapa, recuperacion de artefactos, subida por streaming y controles de seguridad existentes.
 
 Incluye:
 
@@ -41,8 +41,9 @@ Incluye:
 - Cache de Remotion/Chrome en la carpeta de datos del usuario para evitar errores de permisos en `Program Files`.
 - Recuperacion local de renders, builds y previews cuando ya existe un artefacto final en disco.
 - Reintentos seguros de `upload` y `complete` sin renderizar otra vez cuando el artefacto final ya esta listo.
+- Cierre no recuperable de jobs locales cuando Engine responde que el job ya no es confirmable, conservando el archivo local para revision.
 - Limpieza segura de workspaces temporales por job, preservando artefactos locales mientras sigan recuperables.
-- UI que conserva estados `upload_pending` y `confirm_pending` aunque el worker quede temporalmente idle.
+- UI que conserva estados `upload_pending`, `confirm_pending`, recuperacion y error aunque el worker quede temporalmente idle.
 - Politica local de retencion configurable: borrar al confirmar o conservar copia local.
 - Resumen local de recuperacion y limpieza en la app.
 - Instalacion silenciosa al reiniciar desde la actualizacion descargada, sin abrir el asistente NSIS.
