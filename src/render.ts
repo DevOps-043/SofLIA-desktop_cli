@@ -201,7 +201,11 @@ export async function renderClaimedJob(
         ? 'render_frames'
         : 'render_encoding';
     const now = Date.now();
-    const shouldReport = percent > lastPercent
+    // Reporting every rendered percentage can generate dozens of database writes
+    // during a short render. The lease is 180 seconds and the reporter also has a
+    // keep-alive, so a three point cadence keeps the job alive without overwhelming
+    // the Engine control plane.
+    const shouldReport = percent >= lastPercent + 3
       || stage !== lastRenderStage
       || now - lastRenderProgressAtMs >= 15000;
     if (!shouldReport) return;

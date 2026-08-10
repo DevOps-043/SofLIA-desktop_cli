@@ -45,6 +45,8 @@ type StreamingRequestInit = RequestInit & {
 
 export class RecoveryCoordinator {
   private readonly retention: LocalArtifactRetentionService;
+  private readonly retryAfterByJobId = new Map<string, number>();
+  private readonly retryDelayByJobId = new Map<string, number>();
 
   constructor(
     private readonly store: LocalJobStore,
@@ -57,6 +59,7 @@ export class RecoveryCoordinator {
   async recoverPendingJobs(limit = 10): Promise<LocalRecoverySummary> {
     const jobs = this.store.listRecoverableJobs(limit);
     for (const job of jobs) {
+      if (!this.isReadyToRetry(job.jobId)) continue;
       await this.recoverJob(job);
     }
     return this.store.getRecoverySummary();
@@ -130,6 +133,7 @@ export class RecoveryCoordinator {
         buildLog: job.jobType === 'template_build' ? `Template build recovered locally. jobId=${job.jobId}` : undefined,
       });
       this.store.markRemoteConfirmed(job.jobId);
+      this.clearRetry(job.jobId);
       const refreshed = this.store.listRecoverableJobs(50).find((item) => item.jobId === job.jobId) || job;
       await this.applyCleanup(refreshed);
     } catch (error) {
@@ -150,6 +154,7 @@ export class RecoveryCoordinator {
       } else {
         this.store.markConfirmFailed(job.jobId, error);
       }
+      this.scheduleRetry(job.jobId);
       this.events.onEvent?.({
         state: 'error',
         message: error instanceof Error ? error.message : String(error),
@@ -157,6 +162,24 @@ export class RecoveryCoordinator {
         jobType: job.jobType,
       });
     }
+  }
+
+  private isReadyToRetry(jobId: string): boolean {
+    return (this.retryAfterByJobId.get(jobId) || 0) <= Date.now();
+  }
+
+  private scheduleRetry(jobId: string): void {
+    const previousDelay = this.retryDelayByJobId.get(jobId) || 0;
+    const delay = previousDelay === 0
+      ? 10_000
+      : Math.min(previousDelay * 2, 5 * 60_000);
+    this.retryDelayByJobId.set(jobId, delay);
+    this.retryAfterByJobId.set(jobId, Date.now() + delay);
+  }
+
+  private clearRetry(jobId: string): void {
+    this.retryAfterByJobId.delete(jobId);
+    this.retryDelayByJobId.delete(jobId);
   }
 
   private async applyCleanup(job: LocalJobRecord): Promise<void> {

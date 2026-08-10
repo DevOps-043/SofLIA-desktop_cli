@@ -86,6 +86,14 @@ export async function startWorkerLoop(
   const config = await dependencies.loadConfig();
   const client = dependencies.createClient(config.apiUrl, config.token);
   const localJobStore = await dependencies.createLocalJobStore();
+  const recoveryCoordinator = localJobStore && client.refreshUploadUrl && client.complete
+    ? new RecoveryCoordinator(localJobStore, {
+        refreshUploadUrl: client.refreshUploadUrl.bind(client),
+        complete: client.complete.bind(client),
+      }, {
+        onEvent: (event) => emit(event),
+      })
+    : null;
   const workspaceCleanup = dependencies.createWorkspaceCleanup();
   const retention = localJobStore ? new LocalArtifactRetentionService(localJobStore) : null;
   const pollIntervalMs = Math.max(1000, options.pollIntervalMs || 5000);
@@ -321,14 +329,8 @@ export async function startWorkerLoop(
 
   while (!shouldStop) {
     try {
-      if (localJobStore && client.refreshUploadUrl && client.complete) {
-        const recovery = new RecoveryCoordinator(localJobStore, {
-          refreshUploadUrl: client.refreshUploadUrl.bind(client),
-          complete: client.complete.bind(client),
-        }, {
-          onEvent: (event) => emit(event),
-        });
-        await recovery.recoverPendingJobs();
+      if (recoveryCoordinator) {
+        await recoveryCoordinator.recoverPendingJobs();
       }
 
       await client.heartbeat('ONLINE', {

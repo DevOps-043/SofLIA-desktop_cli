@@ -143,4 +143,48 @@ describe('RecoveryCoordinator', () => {
     await fsp.access(artifactPath);
     store.close();
   });
+
+  it('backs off repeated recoverable completion failures', async () => {
+    const store = createTestStore();
+    await store.initialize();
+    const artifactDir = path.join(getWorkspaceDir(), 'renders', 'backoff-job');
+    const artifactPath = path.join(artifactDir, 'output.mp4');
+    await fsp.mkdir(artifactDir, { recursive: true });
+    await fsp.writeFile(artifactPath, 'video');
+    store.upsertClaimedJob({
+      jobId: 'backoff-job',
+      jobType: 'render',
+      remoteTable: localJobTypeToRemoteTable('render'),
+      localStatus: 'claimed',
+      stage: 'claim',
+      cleanupPolicy: 'keep_all',
+      outputStoragePath: 'completed/backoff-job.mp4',
+    });
+    store.markArtifactReady({
+      jobId: 'backoff-job',
+      artifactPath,
+      artifactChecksum: 'c'.repeat(64),
+      artifactSizeBytes: 5,
+      outputStoragePath: 'completed/backoff-job.mp4',
+    });
+    store.markUploadedPendingComplete('backoff-job');
+
+    let completeCount = 0;
+    const recovery = new RecoveryCoordinator(store, {
+      refreshUploadUrl: async () => {
+        throw new Error('refresh should not be called for an uploaded artifact');
+      },
+      complete: async () => {
+        completeCount += 1;
+        throw new Error('HTTP 500: Internal server error');
+      },
+    });
+
+    await recovery.recoverPendingJobs();
+    await recovery.recoverPendingJobs();
+
+    assert.equal(completeCount, 1);
+    assert.equal(store.getJob('backoff-job')?.localStatus, 'confirm_failed');
+    store.close();
+  });
 });
