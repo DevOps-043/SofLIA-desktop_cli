@@ -144,6 +144,49 @@ describe('RecoveryCoordinator', () => {
     store.close();
   });
 
+  it('stops retrying an artifact whose duration Engine rejected', async () => {
+    const store = createTestStore();
+    await store.initialize();
+    const artifactDir = path.join(getWorkspaceDir(), 'renders', 'duration-mismatch-job');
+    const artifactPath = path.join(artifactDir, 'output.mp4');
+    await fsp.mkdir(artifactDir, { recursive: true });
+    await fsp.writeFile(artifactPath, 'video');
+
+    store.upsertClaimedJob({
+      jobId: 'duration-mismatch-job',
+      jobType: 'render',
+      remoteTable: localJobTypeToRemoteTable('render'),
+      localStatus: 'claimed',
+      stage: 'claim',
+      cleanupPolicy: 'keep_all',
+      outputStoragePath: 'completed/duration-mismatch-job.mp4',
+    });
+    store.markArtifactReady({
+      jobId: 'duration-mismatch-job',
+      artifactPath,
+      artifactChecksum: 'd'.repeat(64),
+      artifactSizeBytes: 5,
+      outputStoragePath: 'completed/duration-mismatch-job.mp4',
+    });
+    store.markUploadedPendingComplete('duration-mismatch-job');
+
+    const recovery = new RecoveryCoordinator(store, {
+      refreshUploadUrl: async () => {
+        throw new Error('refresh should not be called for an uploaded artifact');
+      },
+      complete: async () => {
+        throw new Error('HTTP 422: {"code":"OUTPUT_DURATION_MISMATCH"}');
+      },
+    });
+
+    await recovery.recoverPendingJobs();
+
+    assert.equal(store.getJob('duration-mismatch-job')?.localStatus, 'failed_non_recoverable');
+    assert.equal(store.getJob('duration-mismatch-job')?.lastErrorCode, 'REMOTE_OUTPUT_DURATION_MISMATCH');
+    await fsp.access(artifactPath);
+    store.close();
+  });
+
   it('backs off repeated recoverable completion failures', async () => {
     const store = createTestStore();
     await store.initialize();

@@ -1,6 +1,6 @@
 {
   "name": "soflia-engine-render-worker",
-  "version": "0.3.9",
+  "version": "0.3.10",
   "private": true,
   "desktopName": "soflia-engine-render-worker",
   "author": {

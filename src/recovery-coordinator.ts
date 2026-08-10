@@ -138,14 +138,21 @@ export class RecoveryCoordinator {
       await this.applyCleanup(refreshed);
     } catch (error) {
       if (isTerminalRemoteCompletionError(error)) {
-        const message = 'SofLIA ya no acepta confirmar este job porque fue cancelado o termino en otro estado. El archivo local se conserva para revision.';
-        this.store.markNonRecoverableFailure(job.jobId, 'REMOTE_JOB_NOT_RECOVERABLE', message);
+        const durationMismatch = isOutputDurationMismatchError(error);
+        const message = durationMismatch
+          ? 'SofLIA rechazo este video porque su duracion no coincide con el contrato del job. El archivo local se conserva para revision.'
+          : 'SofLIA ya no acepta confirmar este job porque fue cancelado o termino en otro estado. El archivo local se conserva para revision.';
+        this.store.markNonRecoverableFailure(
+          job.jobId,
+          durationMismatch ? 'REMOTE_OUTPUT_DURATION_MISMATCH' : 'REMOTE_JOB_NOT_RECOVERABLE',
+          message,
+        );
         this.events.onEvent?.({
           state: 'error',
           message,
           jobId: job.jobId,
           jobType: job.jobType,
-          stage: 'remote_job_not_recoverable',
+          stage: durationMismatch ? 'remote_output_duration_mismatch' : 'remote_job_not_recoverable',
         });
         return;
       }
@@ -196,7 +203,13 @@ export class RecoveryCoordinator {
 
 function isTerminalRemoteCompletionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /HTTP 409:.*JOB_(?:NOT_CLAIM(?:ABLE|EABLE)|ALREADY_COMPLETED_WITH_DIFFERENT_OUTPUT|FORBIDDEN_FOR_WORKER|TYPE_NOT_SUPPORTED|PROVIDER_NOT_DESKTOP_WORKER)/i.test(message);
+  return /HTTP 409:.*JOB_(?:NOT_CLAIM(?:ABLE|EABLE)|ALREADY_COMPLETED_WITH_DIFFERENT_OUTPUT|FORBIDDEN_FOR_WORKER|TYPE_NOT_SUPPORTED|PROVIDER_NOT_DESKTOP_WORKER)/i.test(message)
+    || isOutputDurationMismatchError(error);
+}
+
+function isOutputDurationMismatchError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /HTTP 422:.*OUTPUT_DURATION_MISMATCH/i.test(message);
 }
 
 function contentTypeForJob(job: LocalJobRecord): string {
