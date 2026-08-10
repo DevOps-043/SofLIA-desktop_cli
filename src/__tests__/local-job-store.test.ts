@@ -129,4 +129,27 @@ describe('LocalJobStore', () => {
 
     store.close();
   });
+
+  it('clears the local queue and its event history without touching the database file', async () => {
+    const store = createTestStore();
+    await store.initialize();
+    store.upsertClaimedJob({
+      jobId: 'job-cleanup',
+      jobType: 'render',
+      remoteTable: localJobTypeToRemoteTable('render'),
+      localStatus: 'claimed',
+      stage: 'claim',
+      cleanupPolicy: 'delete_on_remote_confirm',
+    });
+
+    assert.deepEqual(store.clearAllLocalJobs(), { jobsCleared: 1, eventsCleared: 1 });
+    assert.equal(store.getJob('job-cleanup'), null);
+    assert.deepEqual(store.getRecoverySummary(), {
+      pendingUploads: 0,
+      pendingCompletes: 0,
+      pendingCleanup: 0,
+      retainedBytes: 0,
+    });
+    store.close();
+  });
 });

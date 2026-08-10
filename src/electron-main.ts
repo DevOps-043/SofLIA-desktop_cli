@@ -15,6 +15,7 @@ import {
 } from './config.js';
 import { normalizeLocalRetentionPolicy } from './local-job-state.js';
 import { LocalJobStore } from './local-job-store.js';
+import { JobWorkspaceCleanupService } from './job-workspace-cleanup.js';
 import { logError, sanitizeLog } from './logging.js';
 import { configureWritableWorkingDirectory, getAppDataDir, getConfigPath } from './paths.js';
 import { ResourceMonitor } from './resource-monitor.js';
@@ -57,6 +58,7 @@ if (!hasSingleInstanceLock) {
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let workerAbortController: AbortController | null = null;
+let workerLoopPromise: Promise<void> | null = null;
 let closeToTray = true;
 let isQuitting = false;
 const rendererDevUrl = process.env.SOFLIA_RENDERER_DEV_URL;
@@ -439,7 +441,7 @@ async function startWorker() {
   }
 
   workerAbortController = new AbortController();
-  void startWorkerLoop({
+  const loop = startWorkerLoop({
     appVersion,
     signal: workerAbortController.signal,
     onStatus: publishWorkerEvent,
@@ -448,8 +450,10 @@ async function startWorker() {
       state: 'error',
       message: sanitizeLog(error instanceof Error ? error.message : String(error)),
     });
-  }).finally(() => {
+  });
+  workerLoopPromise = loop.finally(() => {
     workerAbortController = null;
+    workerLoopPromise = null;
     publishWorkerEvent({ state: 'stopped', message: 'Worker detenido' });
   });
 
@@ -496,6 +500,34 @@ async function clearLink() {
     message: 'Vinculacion local limpiada. Genera un codigo nuevo en SofLIA para conectar este equipo.',
   });
   return { cleared: true };
+}
+
+async function clearLocalJobs() {
+  if (workerLoopPromise) {
+    await stopWorker();
+    const stopped = await Promise.race([
+      workerLoopPromise.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 7_000)),
+    ]);
+    if (!stopped) {
+      throw new Error('El worker esta terminando el job actual. Espera a que se detenga y vuelve a intentar la limpieza local.');
+    }
+  }
+
+  const workspaceCleanup = new JobWorkspaceCleanupService();
+  const workspaceResult = await workspaceCleanup.cleanupAllJobWorkspaces();
+  const store = new LocalJobStore();
+  try {
+    await store.initialize();
+    const queueResult = store.clearAllLocalJobs();
+    publishWorkerEvent({
+      state: 'stopped',
+      message: `Limpieza local terminada: ${queueResult.jobsCleared} jobs y ${workspaceResult.deletedCount} carpetas eliminados.`,
+    });
+    return { ...queueResult, ...workspaceResult };
+  } finally {
+    store.close();
+  }
 }
 
 async function setApiUrl(_event: Electron.IpcMainInvokeEvent, rawApiUrl: string) {
@@ -621,6 +653,7 @@ ipcMain.handle('app:link', async (_event, input: { apiUrl: string; code: string 
 });
 
 ipcMain.handle('app:clear-link', clearLink);
+ipcMain.handle('app:clear-local-jobs', clearLocalJobs);
 ipcMain.handle('app:start-worker', startWorker);
 ipcMain.handle('app:stop-worker', stopWorker);
 ipcMain.handle('app:set-api-url', setApiUrl);

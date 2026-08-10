@@ -75,6 +75,30 @@ export class JobWorkspaceCleanupService {
     return { deletedCount, skippedCount };
   }
 
+  /** Removes every job workspace under the worker-owned roots. */
+  async cleanupAllJobWorkspaces(): Promise<{ deletedCount: number; skippedCount: number }> {
+    let deletedCount = 0;
+    let skippedCount = 0;
+
+    for (const jobType of Object.keys(JOB_WORKSPACE_DIRS) as LocalJobType[]) {
+      const root = path.resolve(this.workspaceDir, JOB_WORKSPACE_DIRS[jobType]);
+      const entries = await fsp.readdir(root, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return [];
+        throw error;
+      });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) {
+          skippedCount += 1;
+          continue;
+        }
+        const candidate = this.resolveJobWorkspacePath(jobType, entry.name);
+        await fsp.rm(candidate, { recursive: true, force: true });
+        deletedCount += 1;
+      }
+    }
+    return { deletedCount, skippedCount };
+  }
+
   resolveJobWorkspacePath(jobType: LocalJobType, jobId: string): string {
     const baseName = sanitizeJobWorkspaceBaseName(jobId);
     const root = path.resolve(this.workspaceDir, JOB_WORKSPACE_DIRS[jobType]);
