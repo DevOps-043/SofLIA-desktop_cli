@@ -4,9 +4,9 @@ Aplicacion de escritorio para renderizar videos de SofLIA - Engine usando la com
 
 ## Version actual
 
-### v0.3.8
+### v0.3.9
 
-Patch enfocada en mantenimiento local y recuperacion: agrega una accion segura para limpiar jobs, reintentos y workspaces guardados en este equipo sin tocar SofLIA Engine, mantiene el worker detenido antes de borrar estado local, y conserva las mejoras de recuperacion, videos largos, descargas resilientes, telemetria por etapa, subida por streaming y controles de seguridad existentes.
+Patch enfocada en estabilidad del control-plane y recuperacion: aplica backoff exponencial a reintentos recuperables de confirmacion, reutiliza el coordinador de recuperacion entre ciclos del worker y reduce la cadencia de reportes de progreso de render para evitar escrituras excesivas. Conserva la limpieza local manual, las mejoras para videos largos, descargas resilientes, telemetria por etapa, subida por streaming y controles de seguridad existentes.
 
 Incluye:
 
@@ -22,6 +22,7 @@ Incluye:
 - Reclamo automatico de jobs con `claim-next`.
 - Compatibilidad con cola secuencial: el worker procesa un video, termina, y despues reclama el siguiente.
 - Progreso visible del job actual: job, composicion, etapa y porcentaje.
+- Reporte de progreso de render con cadencia acotada para reducir carga sobre el control-plane sin perder lease.
 - Telemetria de rendimiento por fase: descarga/cache de bundle, preparacion de Chromium, seleccion de composicion, render de frames, encoding, muxing, checksum y upload.
 - Preparacion local de assets remotos conocidos antes de renderizar para reducir fallos de Remotion por URLs externas inestables.
 - Descargas con timeout por inactividad y no por duracion total, compatibles con videos grandes y enlaces lentos.
@@ -40,6 +41,7 @@ Incluye:
 - Generacion de previews externos de plantilla con poster PNG y video MP4 corto cuando el backend entrega URLs para ambos artefactos.
 - Cache de Remotion/Chrome en la carpeta de datos del usuario para evitar errores de permisos en `Program Files`.
 - Recuperacion local de renders, builds y previews cuando ya existe un artefacto final en disco.
+- Backoff exponencial para reintentos recuperables de `complete`, evitando ciclos cerrados contra Engine cuando hay fallos temporales.
 - Limpieza manual de jobs locales, eventos y workspaces temporales desde la app, sin borrar jobs ni videos remotos.
 - Reintentos seguros de `upload` y `complete` sin renderizar otra vez cuando el artefacto final ya esta listo.
 - Cierre no recuperable de jobs locales cuando Engine responde que el job ya no es confirmable, conservando el archivo local para revision.
@@ -147,9 +149,9 @@ GitHub Actions genera instaladores desde:
 .github/workflows/desktop-installers.yml
 ```
 
-El workflow valida que el tag coincida con la version de `package.json`. Para esta publicacion la version esperada es `0.3.8`, por lo tanto el tag debe ser `v0.3.8`.
+El workflow valida que el tag coincida con la version de `package.json`. Para esta publicacion la version esperada es `0.3.9`, por lo tanto el tag debe ser `v0.3.9`.
 
-### Comandos para subir v0.3.8
+### Comandos para subir v0.3.9
 
 Revisar estado:
 
@@ -172,7 +174,7 @@ git add .
 Crear commit:
 
 ```powershell
-git commit -m "Release v0.3.8 worker update"
+git commit -m "Release v0.3.9 worker update"
 ```
 
 Subir rama actual:
@@ -184,13 +186,13 @@ git push origin HEAD
 Crear tag:
 
 ```powershell
-git tag v0.3.8
+git tag v0.3.9
 ```
 
 Subir tag:
 
 ```powershell
-git push origin v0.3.8
+git push origin v0.3.9
 ```
 
 Al subir un tag `v*`, el workflow crea un GitHub Release y adjunta instaladores para Windows, macOS y Linux.
@@ -205,7 +207,7 @@ https://github.com/DevOps-043/SofLIA-desktop_cli/releases/latest/download/SofLIA
 
 ## Firma y notarizacion macOS
 
-Por ahora el workflow no exige secrets de GitHub para macOS. Esto permite publicar la v0.3.8 sin bloquear el release.
+Por ahora el workflow no exige secrets de GitHub para macOS. Esto permite publicar la v0.3.9 sin bloquear el release.
 
 Cuando decidamos activar firma y notarizacion, necesitaremos configurar:
 
