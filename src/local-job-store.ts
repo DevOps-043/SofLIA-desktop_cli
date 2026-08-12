@@ -56,6 +56,11 @@ export interface MarkArtifactReadyInput {
   outputStoragePath?: string;
 }
 
+export interface LocalJobCleanupResult {
+  jobsCleared: number;
+  eventsCleared: number;
+}
+
 export class LocalJobStore {
   private database?: DatabaseSync;
 
@@ -325,6 +330,25 @@ export class LocalJobStore {
       pendingCleanup: Number(row?.pending_cleanup || 0),
       retainedBytes: Number(row?.retained_bytes || 0),
     };
+  }
+
+  /**
+   * Removes only the durable local queue. The caller is responsible for
+   * stopping the worker and removing the corresponding job workspaces first.
+   * It never changes a job in SofLIA Engine.
+   */
+  clearAllLocalJobs(): LocalJobCleanupResult {
+    const database = this.getDatabase();
+    const jobsCleared = Number((database.prepare('SELECT COUNT(*) AS count FROM local_jobs').get() as { count?: number }).count || 0);
+    const eventsCleared = Number((database.prepare('SELECT COUNT(*) AS count FROM local_job_events').get() as { count?: number }).count || 0);
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      database.exec('DELETE FROM local_job_events; DELETE FROM local_jobs; COMMIT;');
+    } catch (error) {
+      database.exec('ROLLBACK;');
+      throw error;
+    }
+    return { jobsCleared, eventsCleared };
   }
 
   recordBundleCache(bundleHash: string, bundlePath: string, sizeBytes: number, ready: boolean): void {

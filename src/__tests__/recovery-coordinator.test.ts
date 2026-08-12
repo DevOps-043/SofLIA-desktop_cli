@@ -98,4 +98,136 @@ describe('RecoveryCoordinator', () => {
 
     store.close();
   });
+
+  it('stops retrying a locally retained artifact when Engine rejects a terminal job', async () => {
+    const store = createTestStore();
+    await store.initialize();
+    const artifactDir = path.join(getWorkspaceDir(), 'renders', 'cancelled-job');
+    const artifactPath = path.join(artifactDir, 'output.mp4');
+    await fsp.mkdir(artifactDir, { recursive: true });
+    await fsp.writeFile(artifactPath, 'video');
+
+    store.upsertClaimedJob({
+      jobId: 'cancelled-job',
+      jobType: 'render',
+      remoteTable: localJobTypeToRemoteTable('render'),
+      localStatus: 'claimed',
+      stage: 'claim',
+      cleanupPolicy: 'keep_all',
+      outputStoragePath: 'completed/cancelled-job.mp4',
+    });
+    store.markArtifactReady({
+      jobId: 'cancelled-job',
+      artifactPath,
+      artifactChecksum: 'b'.repeat(64),
+      artifactSizeBytes: 5,
+      outputStoragePath: 'completed/cancelled-job.mp4',
+    });
+    store.markUploadedPendingComplete('cancelled-job');
+
+    let completeCount = 0;
+    const recovery = new RecoveryCoordinator(store, {
+      refreshUploadUrl: async () => {
+        throw new Error('refresh should not be called for an uploaded artifact');
+      },
+      complete: async () => {
+        completeCount += 1;
+        throw new Error('HTTP 409: {"error":"JOB_NOT_CLAIMABLE"}');
+      },
+    });
+
+    await recovery.recoverPendingJobs();
+
+    assert.equal(completeCount, 1);
+    assert.equal(store.getJob('cancelled-job')?.localStatus, 'failed_non_recoverable');
+    await fsp.access(artifactPath);
+    store.close();
+  });
+
+  it('stops retrying an artifact whose duration Engine rejected', async () => {
+    const store = createTestStore();
+    await store.initialize();
+    const artifactDir = path.join(getWorkspaceDir(), 'renders', 'duration-mismatch-job');
+    const artifactPath = path.join(artifactDir, 'output.mp4');
+    await fsp.mkdir(artifactDir, { recursive: true });
+    await fsp.writeFile(artifactPath, 'video');
+
+    store.upsertClaimedJob({
+      jobId: 'duration-mismatch-job',
+      jobType: 'render',
+      remoteTable: localJobTypeToRemoteTable('render'),
+      localStatus: 'claimed',
+      stage: 'claim',
+      cleanupPolicy: 'keep_all',
+      outputStoragePath: 'completed/duration-mismatch-job.mp4',
+    });
+    store.markArtifactReady({
+      jobId: 'duration-mismatch-job',
+      artifactPath,
+      artifactChecksum: 'd'.repeat(64),
+      artifactSizeBytes: 5,
+      outputStoragePath: 'completed/duration-mismatch-job.mp4',
+    });
+    store.markUploadedPendingComplete('duration-mismatch-job');
+
+    const recovery = new RecoveryCoordinator(store, {
+      refreshUploadUrl: async () => {
+        throw new Error('refresh should not be called for an uploaded artifact');
+      },
+      complete: async () => {
+        throw new Error('HTTP 422: {"code":"OUTPUT_DURATION_MISMATCH"}');
+      },
+    });
+
+    await recovery.recoverPendingJobs();
+
+    assert.equal(store.getJob('duration-mismatch-job')?.localStatus, 'failed_non_recoverable');
+    assert.equal(store.getJob('duration-mismatch-job')?.lastErrorCode, 'REMOTE_OUTPUT_DURATION_MISMATCH');
+    await fsp.access(artifactPath);
+    store.close();
+  });
+
+  it('backs off repeated recoverable completion failures', async () => {
+    const store = createTestStore();
+    await store.initialize();
+    const artifactDir = path.join(getWorkspaceDir(), 'renders', 'backoff-job');
+    const artifactPath = path.join(artifactDir, 'output.mp4');
+    await fsp.mkdir(artifactDir, { recursive: true });
+    await fsp.writeFile(artifactPath, 'video');
+    store.upsertClaimedJob({
+      jobId: 'backoff-job',
+      jobType: 'render',
+      remoteTable: localJobTypeToRemoteTable('render'),
+      localStatus: 'claimed',
+      stage: 'claim',
+      cleanupPolicy: 'keep_all',
+      outputStoragePath: 'completed/backoff-job.mp4',
+    });
+    store.markArtifactReady({
+      jobId: 'backoff-job',
+      artifactPath,
+      artifactChecksum: 'c'.repeat(64),
+      artifactSizeBytes: 5,
+      outputStoragePath: 'completed/backoff-job.mp4',
+    });
+    store.markUploadedPendingComplete('backoff-job');
+
+    let completeCount = 0;
+    const recovery = new RecoveryCoordinator(store, {
+      refreshUploadUrl: async () => {
+        throw new Error('refresh should not be called for an uploaded artifact');
+      },
+      complete: async () => {
+        completeCount += 1;
+        throw new Error('HTTP 500: Internal server error');
+      },
+    });
+
+    await recovery.recoverPendingJobs();
+    await recovery.recoverPendingJobs();
+
+    assert.equal(completeCount, 1);
+    assert.equal(store.getJob('backoff-job')?.localStatus, 'confirm_failed');
+    store.close();
+  });
 });

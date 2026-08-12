@@ -45,6 +45,8 @@ type StreamingRequestInit = RequestInit & {
 
 export class RecoveryCoordinator {
   private readonly retention: LocalArtifactRetentionService;
+  private readonly retryAfterByJobId = new Map<string, number>();
+  private readonly retryDelayByJobId = new Map<string, number>();
 
   constructor(
     private readonly store: LocalJobStore,
@@ -57,6 +59,7 @@ export class RecoveryCoordinator {
   async recoverPendingJobs(limit = 10): Promise<LocalRecoverySummary> {
     const jobs = this.store.listRecoverableJobs(limit);
     for (const job of jobs) {
+      if (!this.isReadyToRetry(job.jobId)) continue;
       await this.recoverJob(job);
     }
     return this.store.getRecoverySummary();
@@ -130,14 +133,35 @@ export class RecoveryCoordinator {
         buildLog: job.jobType === 'template_build' ? `Template build recovered locally. jobId=${job.jobId}` : undefined,
       });
       this.store.markRemoteConfirmed(job.jobId);
+      this.clearRetry(job.jobId);
       const refreshed = this.store.listRecoverableJobs(50).find((item) => item.jobId === job.jobId) || job;
       await this.applyCleanup(refreshed);
     } catch (error) {
+      if (isTerminalRemoteCompletionError(error)) {
+        const durationMismatch = isOutputDurationMismatchError(error);
+        const message = durationMismatch
+          ? 'SofLIA rechazo este video porque su duracion no coincide con el contrato del job. El archivo local se conserva para revision.'
+          : 'SofLIA ya no acepta confirmar este job porque fue cancelado o termino en otro estado. El archivo local se conserva para revision.';
+        this.store.markNonRecoverableFailure(
+          job.jobId,
+          durationMismatch ? 'REMOTE_OUTPUT_DURATION_MISMATCH' : 'REMOTE_JOB_NOT_RECOVERABLE',
+          message,
+        );
+        this.events.onEvent?.({
+          state: 'error',
+          message,
+          jobId: job.jobId,
+          jobType: job.jobType,
+          stage: durationMismatch ? 'remote_output_duration_mismatch' : 'remote_job_not_recoverable',
+        });
+        return;
+      }
       if (job.localStatus === 'artifact_ready' || job.localStatus === 'upload_failed') {
         this.store.markUploadFailed(job.jobId, error);
       } else {
         this.store.markConfirmFailed(job.jobId, error);
       }
+      this.scheduleRetry(job.jobId);
       this.events.onEvent?.({
         state: 'error',
         message: error instanceof Error ? error.message : String(error),
@@ -145,6 +169,24 @@ export class RecoveryCoordinator {
         jobType: job.jobType,
       });
     }
+  }
+
+  private isReadyToRetry(jobId: string): boolean {
+    return (this.retryAfterByJobId.get(jobId) || 0) <= Date.now();
+  }
+
+  private scheduleRetry(jobId: string): void {
+    const previousDelay = this.retryDelayByJobId.get(jobId) || 0;
+    const delay = previousDelay === 0
+      ? 10_000
+      : Math.min(previousDelay * 2, 5 * 60_000);
+    this.retryDelayByJobId.set(jobId, delay);
+    this.retryAfterByJobId.set(jobId, Date.now() + delay);
+  }
+
+  private clearRetry(jobId: string): void {
+    this.retryAfterByJobId.delete(jobId);
+    this.retryDelayByJobId.delete(jobId);
   }
 
   private async applyCleanup(job: LocalJobRecord): Promise<void> {
@@ -157,6 +199,17 @@ export class RecoveryCoordinator {
       stage: 'cleanup',
     });
   }
+}
+
+function isTerminalRemoteCompletionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /HTTP 409:.*JOB_(?:NOT_CLAIM(?:ABLE|EABLE)|ALREADY_COMPLETED_WITH_DIFFERENT_OUTPUT|FORBIDDEN_FOR_WORKER|TYPE_NOT_SUPPORTED|PROVIDER_NOT_DESKTOP_WORKER)/i.test(message)
+    || isOutputDurationMismatchError(error);
+}
+
+function isOutputDurationMismatchError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /HTTP 422:.*OUTPUT_DURATION_MISMATCH/i.test(message);
 }
 
 function contentTypeForJob(job: LocalJobRecord): string {

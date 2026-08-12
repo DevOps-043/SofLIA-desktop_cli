@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('sofliaWorker', {
   getStatus: () => ipcRenderer.invoke('app:get-status'),
   link: (input) => ipcRenderer.invoke('app:link', input),
   clearLink: () => ipcRenderer.invoke('app:clear-link'),
+  clearLocalJobs: () => ipcRenderer.invoke('app:clear-local-jobs'),
   startWorker: () => ipcRenderer.invoke('app:start-worker'),
   stopWorker: () => ipcRenderer.invoke('app:stop-worker'),
   setApiUrl: (apiUrl) => ipcRenderer.invoke('app:set-api-url', apiUrl),

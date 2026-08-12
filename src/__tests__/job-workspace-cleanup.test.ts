@@ -106,4 +106,17 @@ describe('JobWorkspaceCleanupService', () => {
     await assert.rejects(() => fsp.access(staleWorkspace));
     await fsp.access(activeWorkspace);
   });
+
+  it('removes every worker-owned job workspace during manual cleanup', async () => {
+    const service = new JobWorkspaceCleanupService(tempRoot);
+    const renderWorkspace = path.join(tempRoot, 'renders', 'render-1');
+    const buildWorkspace = path.join(tempRoot, 'template-builds', 'build-1');
+    await fsp.mkdir(renderWorkspace, { recursive: true });
+    await fsp.mkdir(buildWorkspace, { recursive: true });
+
+    const result = await service.cleanupAllJobWorkspaces();
+    assert.equal(result.deletedCount, 2);
+    await assert.rejects(() => fsp.access(renderWorkspace));
+    await assert.rejects(() => fsp.access(buildWorkspace));
+  });
 });

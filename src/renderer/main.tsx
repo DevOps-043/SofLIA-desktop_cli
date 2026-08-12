@@ -63,6 +63,7 @@ declare global {
       getStatus: () => Promise<WorkerStatus>;
       link: (input: { apiUrl: string; code: string }) => Promise<LinkResult>;
       clearLink: () => Promise<{ cleared: boolean }>;
+      clearLocalJobs: () => Promise<{ jobsCleared: number; eventsCleared: number; deletedCount: number; skippedCount: number }>;
       startWorker: () => Promise<unknown>;
       stopWorker: () => Promise<unknown>;
       setApiUrl: (apiUrl: string) => Promise<{ apiUrl: string; restarted: boolean; message?: string }>;
@@ -628,11 +629,11 @@ function App() {
       if (event.state === 'claiming' || event.state === 'rendering' || event.state === 'starting') {
         setStatus((current) => ({ ...current, running: true }));
       }
-      if (event.state === 'claiming' || event.state === 'rendering') {
+      if (['claiming', 'rendering', 'recovering', 'upload_pending', 'confirm_pending', 'error'].includes(event.state)) {
         setCurrentJob((current) => mergeWorkerEvent(current, event));
         if (getEventScope(event) === 'bundle') setActiveTab('bundle');
       }
-      if (event.state === 'completed' || event.state === 'error') {
+      if (event.state === 'completed') {
         setCurrentJob((current) => mergeWorkerEvent(current, event));
       }
       if (event.state === 'idle') {
@@ -1198,6 +1199,17 @@ function App() {
                   </div>
                 </div>
                 <div className="maintenance-actions">
+                  <button className="danger full" disabled={busyAction === 'clear-local-jobs'} onClick={() => runAction('clear-local-jobs', async () => {
+                    const confirmed = window.confirm(
+                      'Esto detendra el worker y eliminara todos los jobs, reintentos y archivos temporales guardados en este equipo. No cambia ni borra jobs o videos en SofLIA Engine. ¿Continuar?',
+                    );
+                    if (!confirmed) return;
+                    const result = await window.sofliaWorker.clearLocalJobs();
+                    setCurrentJob(null);
+                    addLog(`Limpieza local completada: ${result.jobsCleared} jobs y ${result.deletedCount} carpetas eliminados.`, 'warn');
+                  })}>
+                    Limpiar jobs locales
+                  </button>
                   <button className="secondary full" disabled={busyAction === 'clear-link'} onClick={() => runAction('clear-link', async () => {
                     await window.sofliaWorker.clearLink();
                     setStatus((current) => ({ ...current, configured: false, running: false, worker: undefined, message: 'Vinculacion local limpiada.' }));
