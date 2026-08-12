@@ -15,6 +15,8 @@ import { prepareRenderAssetsForJob } from './render-asset-preparer.js';
 import { RenderProgressReporter } from './render-progress-reporter.js';
 import type { RenderProgressEvent } from './shared/worker-events.js';
 import type { WorkerChromiumGl, WorkerHardwareAcceleration } from './shared/worker-capacity.js';
+import { assertArtifactMatchesComposition, inspectMediaArtifact } from './media-artifact-inspector.js';
+import { withRemotionBrowser } from './remotion-browser.js';
 
 type RenderClaimedJobOptions = {
   onProgress?: (event: RenderProgressEvent) => void;
@@ -22,6 +24,9 @@ type RenderClaimedJobOptions = {
   hardwareAcceleration?: WorkerHardwareAcceleration;
   chromiumGl?: WorkerChromiumGl;
   videoBitrate?: string;
+  mediaCacheSizeInBytes?: number;
+  offthreadVideoCacheSizeInBytes?: number;
+  offthreadVideoThreads?: number;
   localJobStore?: LocalJobStore;
   localRetentionPolicy?: LocalCleanupPolicy;
 };
@@ -135,29 +140,31 @@ export async function renderClaimedJob(
   });
 
   const compositionStartedAtMs = Date.now();
+  const renderStartedAtMs = Date.now();
   await progressReporter.report(25, 'Resolviendo composicion', 'composition_select');
   const chromiumOptions = options.chromiumGl ? { gl: options.chromiumGl } : undefined;
-  const composition = await selectComposition({
+  const composition = await withRemotionBrowser(options.chromiumGl, async (puppeteerInstance) => {
+  const selectedComposition = await selectComposition({
     serveUrl,
     id: job.compositionId,
     inputProps: preparedAssets.resolvedProps,
     timeoutInMilliseconds: job.timeoutInMilliseconds,
     binariesDirectory,
     chromiumOptions,
+    puppeteerInstance,
   });
   await progressReporter.report(29, 'Composicion resuelta', 'composition_ready', {
     elapsedMs: roundMs(elapsedMsSince(compositionStartedAtMs)),
-    durationInFrames: composition.durationInFrames,
-    fps: composition.fps,
-    width: composition.width,
-    height: composition.height,
-    durationSeconds: Math.round(composition.durationInFrames / composition.fps),
+    durationInFrames: selectedComposition.durationInFrames,
+    fps: selectedComposition.fps,
+    width: selectedComposition.width,
+    height: selectedComposition.height,
+    durationSeconds: Math.round(selectedComposition.durationInFrames / selectedComposition.fps),
   });
 
   let lastPercent = 30;
   let lastRenderStage = '';
   let lastRenderProgressAtMs = 0;
-  const renderStartedAtMs = Date.now();
   const onDownload: RenderMediaOnDownload = (src) => {
     let lastAssetPercent = -1;
     let lastAssetProgressAtMs = 0;
@@ -231,7 +238,7 @@ export async function renderClaimedJob(
   const stopRenderKeepAlive = progressReporter.startKeepAlive();
   try {
     await renderMedia({
-      composition,
+      composition: selectedComposition,
       serveUrl,
       codec: 'h264',
       outputLocation: outputPath,
@@ -239,9 +246,13 @@ export async function renderClaimedJob(
       timeoutInMilliseconds: job.timeoutInMilliseconds,
       binariesDirectory,
       chromiumOptions,
+      puppeteerInstance,
       concurrency: options.renderConcurrency,
       hardwareAcceleration: options.hardwareAcceleration,
       videoBitrate: options.videoBitrate,
+      mediaCacheSizeInBytes: options.mediaCacheSizeInBytes,
+      offthreadVideoCacheSizeInBytes: options.offthreadVideoCacheSizeInBytes,
+      offthreadVideoThreads: options.offthreadVideoThreads,
       onStart: ({ frameCount, parallelEncoding, resolvedConcurrency }) => {
         progressReporter.schedule(30, 'Remotion inicio el render', 'render_start', {
           frameCount,
@@ -251,6 +262,9 @@ export async function renderClaimedJob(
           hardwareAcceleration: options.hardwareAcceleration,
           chromiumGl: options.chromiumGl,
           videoBitrate: options.videoBitrate,
+          mediaCacheSizeInBytes: options.mediaCacheSizeInBytes,
+          offthreadVideoCacheSizeInBytes: options.offthreadVideoCacheSizeInBytes,
+          offthreadVideoThreads: options.offthreadVideoThreads,
         });
       },
       onDownload,
@@ -259,13 +273,27 @@ export async function renderClaimedJob(
   } finally {
     stopRenderKeepAlive();
   }
+  return selectedComposition;
+  });
   await progressReporter.report(86, 'Render y encoding terminados', 'render_complete', {
     elapsedMs: roundMs(elapsedMsSince(renderStartedAtMs)),
     totalElapsedMs: roundMs(elapsedMsSince(jobStartedAtMs)),
   });
 
+  const artifactInspection = await inspectMediaArtifact(outputPath);
+  assertArtifactMatchesComposition({
+    artifact: artifactInspection,
+    expectedDurationSeconds: composition.durationInFrames / composition.fps,
+    expectedWidth: composition.width,
+    expectedHeight: composition.height,
+  });
+  await progressReporter.report(87, 'Artefacto MP4 validado', 'output_validation', {
+    ...artifactInspection,
+    requestedHardwareAcceleration: options.hardwareAcceleration,
+  });
+
   const checksumStartedAtMs = Date.now();
-  await progressReporter.report(87, 'Calculando checksum del video', 'checksum');
+  await progressReporter.report(88, 'Calculando checksum del video', 'checksum');
   const checksum = await sha256File(outputPath);
   const stat = await fsp.stat(outputPath);
   await progressReporter.report(89, 'Checksum listo', 'checksum_ready', {

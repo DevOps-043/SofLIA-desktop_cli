@@ -5,6 +5,7 @@ import type { ResourceMetricsSnapshot } from '../shared/resource-metrics';
 import type { AppUpdateState } from '../shared/update-types';
 import { getWorkerPowerProfile, WORKER_POWER_PROFILES } from '../shared/worker-capacity';
 import type { WorkerChromiumGl, WorkerHardwareAcceleration, WorkerPowerProfile } from '../shared/worker-capacity';
+import type { WorkerRenderCapabilities } from '../shared/render-capabilities';
 import type { WorkerRuntimeEvent } from '../shared/worker-events';
 import './styles.css';
 
@@ -18,10 +19,12 @@ type WorkerStatus = {
   closeToTray: boolean;
   powerProfile?: WorkerPowerProfile;
   maxConcurrentJobs?: number;
+  maxParallelPreviews?: number;
   renderConcurrency?: number;
   hardwareAcceleration?: WorkerHardwareAcceleration;
   chromiumGl?: WorkerChromiumGl;
   videoBitrate?: string;
+  renderCapabilities?: WorkerRenderCapabilities;
   localRetentionPolicy?: LocalRetentionPolicy;
   localRecovery?: {
     pendingUploads: number;
@@ -66,10 +69,12 @@ declare global {
       setPowerProfile: (powerProfile: WorkerPowerProfile) => Promise<{
         powerProfile: WorkerPowerProfile;
         maxConcurrentJobs: number;
+        maxParallelPreviews: number;
         renderConcurrency: number;
         hardwareAcceleration: WorkerHardwareAcceleration;
         chromiumGl: WorkerChromiumGl;
         videoBitrate?: string;
+        renderCapabilities?: WorkerRenderCapabilities;
         restarted: boolean;
         message?: string;
       }>;
@@ -91,10 +96,12 @@ declare global {
         closeToTray?: boolean;
         powerProfile?: WorkerPowerProfile;
         maxConcurrentJobs?: number;
+        maxParallelPreviews?: number;
         renderConcurrency?: number;
         hardwareAcceleration?: WorkerHardwareAcceleration;
         chromiumGl?: WorkerChromiumGl;
         videoBitrate?: string;
+        renderCapabilities?: WorkerRenderCapabilities;
         localRetentionPolicy?: LocalRetentionPolicy;
       }) => void) => () => void;
       onResourceMetrics: (callback: (payload: ResourceMetricsSnapshot) => void) => () => void;
@@ -644,10 +651,12 @@ function App() {
         closeToTray: payload.closeToTray ?? current.closeToTray,
         powerProfile: payload.powerProfile ?? current.powerProfile,
         maxConcurrentJobs: payload.maxConcurrentJobs ?? current.maxConcurrentJobs,
+        maxParallelPreviews: payload.maxParallelPreviews ?? current.maxParallelPreviews,
         renderConcurrency: payload.renderConcurrency ?? current.renderConcurrency,
         hardwareAcceleration: payload.hardwareAcceleration ?? current.hardwareAcceleration,
         chromiumGl: payload.chromiumGl ?? current.chromiumGl,
         videoBitrate: payload.videoBitrate ?? current.videoBitrate,
+        renderCapabilities: payload.renderCapabilities ?? current.renderCapabilities,
         localRetentionPolicy: payload.localRetentionPolicy ?? current.localRetentionPolicy,
       }));
     });
@@ -695,6 +704,8 @@ function App() {
   const bundleLogs = logs.filter((line) => line.scope === 'bundle');
   const workerLogs = logs.filter((line) => line.scope === 'worker');
   const selectedPowerProfile = getWorkerPowerProfile(status.powerProfile);
+  const remotionEncoder = status.renderCapabilities?.remotion.verifiedHardwareEncoder || 'libx264 (CPU)';
+  const hyperframesEncoder = status.renderCapabilities?.hyperframes.verifiedHardwareEncoder || 'libx264 (CPU)';
 
   async function runAction(name: string, action: () => Promise<void>, options: { refresh?: boolean; errorTarget?: 'options' } = {}) {
     setBusyAction(name);
@@ -723,10 +734,12 @@ function App() {
         ...current,
         powerProfile: result.powerProfile,
         maxConcurrentJobs: result.maxConcurrentJobs,
+        maxParallelPreviews: result.maxParallelPreviews,
         renderConcurrency: result.renderConcurrency,
         hardwareAcceleration: result.hardwareAcceleration,
         chromiumGl: result.chromiumGl,
         videoBitrate: result.videoBitrate,
+        renderCapabilities: result.renderCapabilities,
       }));
       addLog(result.message || `Perfil ${getWorkerPowerProfile(profile).label} guardado.`, result.restarted ? 'ok' : 'info');
     }, { refresh: false, errorTarget: 'options' });
@@ -979,6 +992,22 @@ function App() {
                 <Badge text={selectedPowerProfile.label} kind="busy" />
               </div>
               {optionsError ? <p className="inline-error">{optionsError}</p> : null}
+              <div className="encoder-capability-grid" aria-label="Capacidades reales de codificacion">
+                <div>
+                  <span>Remotion final</span>
+                  <strong>{remotionEncoder}</strong>
+                  <small>{status.renderCapabilities?.remotion.hardwareEncodingAvailable
+                    ? 'Codificacion GPU verificada'
+                    : 'Frames en GPU de Chromium; encoding final por CPU'}</small>
+                </div>
+                <div>
+                  <span>HyperFrames / FFmpeg</span>
+                  <strong>{hyperframesEncoder}</strong>
+                  <small>{status.renderCapabilities?.hyperframes.hardwareEncodingAvailable
+                    ? 'Codificacion GPU verificada con prueba real'
+                    : 'Sin encoder GPU operativo; fallback seguro a CPU'}</small>
+                </div>
+              </div>
               <div className="power-profile-grid">
                 {WORKER_POWER_PROFILES.map((profile) => (
                   <article
@@ -993,7 +1022,11 @@ function App() {
                     <span className="power-card-metrics">
                       <span>{profile.maxConcurrentJobs} jobs</span>
                       <span>{profile.id === 'light' ? '1 hilo render' : 'Render adaptativo'}</span>
-                      <span>{profile.hardwareAcceleration === 'disable' ? 'GPU off' : 'GPU auto'}</span>
+                      <span>{profile.hardwareAcceleration === 'disable'
+                        ? 'GPU encode off'
+                        : status.renderCapabilities?.remotion.hardwareEncodingAvailable
+                          ? 'GPU encode verificada'
+                          : 'GPU sólo Chromium'}</span>
                       <span>GL {profile.chromiumGl || 'auto'}</span>
                     </span>
                     <small>{profile.bestFor}</small>

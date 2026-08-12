@@ -710,6 +710,34 @@ small {
   gap: 12px;
 }
 
+.encoder-capability-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.encoder-capability-grid > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.encoder-capability-grid span,
+.encoder-capability-grid small {
+  color: var(--text-soft);
+  font-size: 11px;
+}
+
+.encoder-capability-grid strong {
+  color: var(--text);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 .power-profile-card {
   min-width: 0;
   min-height: 100%;
@@ -1337,6 +1365,9 @@ small {
 }
 
 @media (max-width: 640px) {
+  .encoder-capability-grid {
+    grid-template-columns: 1fr;
+  }
   .app-shell {
     padding: 44px 12px 12px;
   }

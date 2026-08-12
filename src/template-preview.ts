@@ -11,11 +11,20 @@ import { getWorkspaceDir } from './paths.js';
 import { getRemotionBinariesDirectory } from './remotion-binaries.js';
 import { RecoverableJobError } from './recoverable-job-error.js';
 import type { RenderProgressEvent } from './shared/worker-events.js';
+import type { WorkerChromiumGl, WorkerHardwareAcceleration } from './shared/worker-capacity.js';
+import { withRemotionBrowser } from './remotion-browser.js';
 
 type RenderTemplatePreviewJobOptions = {
   onProgress?: (event: RenderProgressEvent) => void;
   localJobStore?: LocalJobStore;
   localRetentionPolicy?: LocalCleanupPolicy;
+  renderConcurrency?: number;
+  hardwareAcceleration?: WorkerHardwareAcceleration;
+  chromiumGl?: WorkerChromiumGl;
+  videoBitrate?: string;
+  mediaCacheSizeInBytes?: number;
+  offthreadVideoCacheSizeInBytes?: number;
+  offthreadVideoThreads?: number;
 };
 
 type StreamingRequestInit = RequestInit & {
@@ -111,17 +120,21 @@ export async function renderTemplatePreviewJob(
   await fsp.rm(outputDir, { recursive: true, force: true });
   await fsp.mkdir(outputDir, { recursive: true });
   await ensureBrowser();
+  const chromiumOptions = options.chromiumGl ? { gl: options.chromiumGl } : undefined;
 
   await reportProgress(client, job, 35, 'Resolviendo composicion para preview', 'template_preview_composition_select', options.onProgress, {
     compositionId: job.compositionId,
     propsHash: job.propsHash,
   });
+  const previewResult = await withRemotionBrowser(options.chromiumGl, async (puppeteerInstance) => {
   const composition = await selectComposition({
     serveUrl,
     id: job.compositionId,
     inputProps: job.resolvedProps,
     timeoutInMilliseconds: job.timeoutInMilliseconds,
     binariesDirectory,
+    chromiumOptions,
+    puppeteerInstance,
   });
 
   const previewFrame = Math.max(
@@ -145,6 +158,8 @@ export async function renderTemplatePreviewJob(
     output: posterPath,
     timeoutInMilliseconds: job.timeoutInMilliseconds,
     binariesDirectory,
+    chromiumOptions,
+    puppeteerInstance,
   });
 
   if (shouldRenderVideoPreview) {
@@ -163,9 +178,33 @@ export async function renderTemplatePreviewJob(
       frameRange: [0, previewFrames - 1],
       timeoutInMilliseconds: job.timeoutInMilliseconds,
       binariesDirectory,
+      chromiumOptions,
+      puppeteerInstance,
+      concurrency: options.renderConcurrency,
+      hardwareAcceleration: options.hardwareAcceleration,
+      videoBitrate: options.videoBitrate,
+      mediaCacheSizeInBytes: options.mediaCacheSizeInBytes,
+      offthreadVideoCacheSizeInBytes: options.offthreadVideoCacheSizeInBytes,
+      offthreadVideoThreads: options.offthreadVideoThreads,
       overwrite: true,
     });
   }
+
+  return {
+    shouldRenderVideoPreview,
+    previewFrames,
+    previewDurationSeconds,
+    compositionDurationSeconds: Math.round(composition.durationInFrames / composition.fps),
+    compositionFrames: composition.durationInFrames,
+  };
+  });
+  const {
+    shouldRenderVideoPreview,
+    previewFrames,
+    previewDurationSeconds,
+    compositionDurationSeconds,
+    compositionFrames,
+  } = previewResult;
 
   const primaryOutputPath = shouldRenderVideoPreview ? videoPath : posterPath;
   const primaryStoragePath = shouldRenderVideoPreview ? job.videoStoragePath! : job.posterStoragePath;
@@ -218,8 +257,8 @@ export async function renderTemplatePreviewJob(
       checksum,
       previewDurationSeconds: shouldRenderVideoPreview ? previewDurationSeconds : undefined,
       previewFrames: shouldRenderVideoPreview ? previewFrames : undefined,
-      compositionDurationSeconds: Math.round(composition.durationInFrames / composition.fps),
-      compositionFrames: composition.durationInFrames,
+      compositionDurationSeconds,
+      compositionFrames,
       posterStoragePath: job.posterStoragePath,
       videoStoragePath: shouldRenderVideoPreview ? job.videoStoragePath : undefined,
     });

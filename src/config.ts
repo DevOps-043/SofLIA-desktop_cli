@@ -4,8 +4,10 @@ import * as path from 'node:path';
 import { getConfigPath } from './paths.js';
 import { normalizeLocalRetentionPolicy } from './local-job-state.js';
 import type { LocalCleanupPolicy } from './local-job-state.js';
-import { DEFAULT_WORKER_POWER_PROFILE, resolveWorkerPowerProfile } from './shared/worker-capacity.js';
+import { DEFAULT_WORKER_POWER_PROFILE, resolveRemotionCacheBudget, resolveWorkerPowerProfile } from './shared/worker-capacity.js';
 import type { WorkerChromiumGl, WorkerHardwareAcceleration, WorkerPowerProfile } from './shared/worker-capacity.js';
+import { readWorkerRenderCapabilities, resolveEffectiveHardwareAcceleration } from './render-capabilities.js';
+import type { WorkerRenderCapabilities } from './shared/render-capabilities.js';
 
 export interface WorkerConfig {
   apiUrl: string;
@@ -13,10 +15,15 @@ export interface WorkerConfig {
   closeToTray?: boolean;
   powerProfile?: WorkerPowerProfile;
   maxConcurrentJobs?: number;
+  maxParallelPreviews?: number;
   renderConcurrency?: number;
   hardwareAcceleration?: WorkerHardwareAcceleration;
   chromiumGl?: WorkerChromiumGl;
   videoBitrate?: string;
+  renderCapabilities?: WorkerRenderCapabilities;
+  mediaCacheSizeInBytes?: number;
+  offthreadVideoCacheSizeInBytes?: number;
+  offthreadVideoThreads?: number;
   localRetentionPolicy?: LocalCleanupPolicy;
 }
 
@@ -57,7 +64,12 @@ export async function loadConfig(): Promise<WorkerConfig> {
   if (!parsed.apiUrl || !parsed.token) {
     throw new Error('Config incompleta. Vincula este equipo desde la app o ejecuta link con un codigo temporal.');
   }
-  const powerProfile = getRuntimeWorkerPowerProfile(parsed.powerProfile);
+  const powerProfile = await getEffectiveRuntimeWorkerPowerProfile(parsed.powerProfile);
+  const renderCapabilities = powerProfile.renderCapabilities;
+  const cacheBudget = resolveRemotionCacheBudget({
+    memoryTotalBytes: os.totalmem(),
+    renderConcurrency: powerProfile.renderConcurrency,
+  });
 
   return {
     apiUrl: parsed.apiUrl.replace(/\/+$/, ''),
@@ -65,10 +77,13 @@ export async function loadConfig(): Promise<WorkerConfig> {
     closeToTray: parsed.closeToTray !== false,
     powerProfile: powerProfile.id,
     maxConcurrentJobs: powerProfile.maxConcurrentJobs,
+    maxParallelPreviews: powerProfile.maxParallelPreviews,
     renderConcurrency: powerProfile.renderConcurrency,
     hardwareAcceleration: powerProfile.hardwareAcceleration,
     chromiumGl: powerProfile.chromiumGl,
     videoBitrate: powerProfile.videoBitrate,
+    renderCapabilities,
+    ...cacheBudget,
     localRetentionPolicy: normalizeLocalRetentionPolicy(parsed.localRetentionPolicy),
   };
 }
@@ -81,4 +96,17 @@ export function getRuntimeWorkerPowerProfile(profile?: string) {
     cpuLogicalThreads: Math.max(1, availableParallelism || 1),
     memoryTotalBytes: Math.max(0, os.totalmem()),
   });
+}
+
+export async function getEffectiveRuntimeWorkerPowerProfile(profile?: string) {
+  const powerProfile = getRuntimeWorkerPowerProfile(profile);
+  const renderCapabilities = await readWorkerRenderCapabilities();
+  return {
+    ...powerProfile,
+    hardwareAcceleration: resolveEffectiveHardwareAcceleration(
+      powerProfile.hardwareAcceleration,
+      renderCapabilities.remotion.hardwareEncodingAvailable,
+    ),
+    renderCapabilities,
+  };
 }

@@ -6,6 +6,7 @@ export type WorkerPowerProfileDefinition = {
   id: WorkerPowerProfile;
   label: string;
   maxConcurrentJobs: number;
+  maxParallelPreviews: number;
   renderConcurrency: number;
   hardwareAcceleration: WorkerHardwareAcceleration;
   chromiumGl: WorkerChromiumGl;
@@ -23,6 +24,7 @@ export type WorkerCapacityHardware = {
 const GIB = 1024 * 1024 * 1024;
 const RENDER_MEMORY_RESERVE_BYTES = 4 * GIB;
 const ESTIMATED_MEMORY_PER_RENDERER_BYTES = 1.25 * GIB;
+const MIB = 1024 * 1024;
 
 const PROFILE_CONCURRENCY_LIMITS: Record<WorkerPowerProfile, {
   cpuFraction: number;
@@ -30,9 +32,9 @@ const PROFILE_CONCURRENCY_LIMITS: Record<WorkerPowerProfile, {
   ceiling: number;
 }> = {
   light: { cpuFraction: 0.15, minimum: 1, ceiling: 1 },
-  balanced: { cpuFraction: 0.4, minimum: 2, ceiling: 6 },
-  high: { cpuFraction: 0.7, minimum: 4, ceiling: 16 },
-  max: { cpuFraction: 0.9, minimum: 8, ceiling: 32 },
+  balanced: { cpuFraction: 0.34, minimum: 2, ceiling: 4 },
+  high: { cpuFraction: 0.5, minimum: 3, ceiling: 8 },
+  max: { cpuFraction: 0.67, minimum: 4, ceiling: 12 },
 };
 
 export const DEFAULT_WORKER_POWER_PROFILE: WorkerPowerProfile = 'balanced';
@@ -42,6 +44,7 @@ export const WORKER_POWER_PROFILES: WorkerPowerProfileDefinition[] = [
     id: 'light',
     label: 'Ligero',
     maxConcurrentJobs: 1,
+    maxParallelPreviews: 1,
     renderConcurrency: 1,
     hardwareAcceleration: 'disable',
     chromiumGl: null,
@@ -58,6 +61,7 @@ export const WORKER_POWER_PROFILES: WorkerPowerProfileDefinition[] = [
     id: 'balanced',
     label: 'Balanceado',
     maxConcurrentJobs: 2,
+    maxParallelPreviews: 2,
     renderConcurrency: 2,
     hardwareAcceleration: 'if-possible',
     chromiumGl: null,
@@ -75,6 +79,7 @@ export const WORKER_POWER_PROFILES: WorkerPowerProfileDefinition[] = [
     id: 'high',
     label: 'Alto',
     maxConcurrentJobs: 4,
+    maxParallelPreviews: 2,
     renderConcurrency: 4,
     hardwareAcceleration: 'if-possible',
     chromiumGl: 'angle',
@@ -82,7 +87,7 @@ export const WORKER_POWER_PROFILES: WorkerPowerProfileDefinition[] = [
     headline: 'Mayor velocidad con mas uso del equipo',
     bestFor: 'PCs dedicadas, CPU de 8+ nucleos y 32 GB RAM.',
     characteristics: [
-      '4 jobs de capacidad reportada',
+      'Hasta 2 previews simultaneos con presupuesto compartido',
       'Concurrencia de render ajustada a CPU y RAM',
       'Activa GPU para Chromium y encoding cuando este disponible',
       'Puede elevar temperatura, ventiladores y consumo',
@@ -91,7 +96,8 @@ export const WORKER_POWER_PROFILES: WorkerPowerProfileDefinition[] = [
   {
     id: 'max',
     label: 'Maximo',
-    maxConcurrentJobs: 8,
+    maxConcurrentJobs: 3,
+    maxParallelPreviews: 3,
     renderConcurrency: 8,
     hardwareAcceleration: 'if-possible',
     chromiumGl: 'angle',
@@ -99,7 +105,7 @@ export const WORKER_POWER_PROFILES: WorkerPowerProfileDefinition[] = [
     headline: 'Solo para estaciones dedicadas',
     bestFor: 'Workstations o servidores locales que no se usan para operar la app.',
     characteristics: [
-      '8 jobs de capacidad reportada',
+      'Hasta 3 previews simultaneos con presupuesto compartido',
       'Concurrencia de render ajustada a CPU y RAM',
       'Usa aceleracion GPU automatica para ensamblados finales',
       'Puede dejar el equipo menos responsivo durante renders',
@@ -109,6 +115,66 @@ export const WORKER_POWER_PROFILES: WorkerPowerProfileDefinition[] = [
 
 export function getWorkerPowerProfile(profile?: string): WorkerPowerProfileDefinition {
   return WORKER_POWER_PROFILES.find((item) => item.id === profile) || WORKER_POWER_PROFILES[1];
+}
+
+export type PreviewExecutionPlan = {
+  parallelJobs: number;
+  renderConcurrencyPerJob: number;
+  totalRenderSlots: number;
+};
+
+/**
+ * Splits one global renderer budget across concurrent preview jobs. Without
+ * this guard every Remotion call may auto-detect the whole CPU independently,
+ * which creates nested concurrency and makes all jobs slower under load.
+ */
+export function resolvePreviewExecutionPlan(input: {
+  jobCount: number;
+  renderConcurrency?: number;
+  maxParallelPreviews?: number;
+}): PreviewExecutionPlan {
+  const jobCount = normalizePositiveInteger(input.jobCount, 1);
+  const totalRenderSlots = normalizePositiveInteger(input.renderConcurrency ?? 1, 1);
+  const maxParallelPreviews = normalizePositiveInteger(input.maxParallelPreviews ?? 1, 1);
+  const parallelJobs = Math.max(1, Math.min(jobCount, totalRenderSlots, maxParallelPreviews));
+
+  return {
+    parallelJobs,
+    renderConcurrencyPerJob: Math.max(1, Math.floor(totalRenderSlots / parallelJobs)),
+    totalRenderSlots,
+  };
+}
+
+export type RemotionCacheBudget = {
+  mediaCacheSizeInBytes: number;
+  offthreadVideoCacheSizeInBytes: number;
+  offthreadVideoThreads: number;
+};
+
+/** Keeps frequently-seeked media in memory while reserving RAM for Chromium. */
+export function resolveRemotionCacheBudget(input: {
+  memoryTotalBytes: number;
+  renderConcurrency: number;
+}): RemotionCacheBudget {
+  const totalMemory = Number.isFinite(input.memoryTotalBytes) ? Math.max(0, input.memoryTotalBytes) : 0;
+  const cachePool = Math.min(2 * GIB, Math.max(256 * MIB, Math.floor(totalMemory * 0.06)));
+  return {
+    mediaCacheSizeInBytes: Math.max(128 * MIB, Math.floor(cachePool * 0.6)),
+    offthreadVideoCacheSizeInBytes: Math.max(128 * MIB, Math.floor(cachePool * 0.4)),
+    offthreadVideoThreads: Math.max(1, Math.min(4, Math.ceil(normalizePositiveInteger(input.renderConcurrency, 1) / 2))),
+  };
+}
+
+export function divideRemotionCacheBudget(
+  budget: RemotionCacheBudget,
+  divisor: number,
+): RemotionCacheBudget {
+  const normalizedDivisor = normalizePositiveInteger(divisor, 1);
+  return {
+    mediaCacheSizeInBytes: Math.max(64 * MIB, Math.floor(budget.mediaCacheSizeInBytes / normalizedDivisor)),
+    offthreadVideoCacheSizeInBytes: Math.max(64 * MIB, Math.floor(budget.offthreadVideoCacheSizeInBytes / normalizedDivisor)),
+    offthreadVideoThreads: Math.max(1, Math.floor(budget.offthreadVideoThreads / normalizedDivisor)),
+  };
 }
 
 /**

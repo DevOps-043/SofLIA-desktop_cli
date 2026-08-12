@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { SofliaWorkerApiClient } from './api-client.js';
 import {
   clearWorkerLink,
-  getRuntimeWorkerPowerProfile,
+  getEffectiveRuntimeWorkerPowerProfile,
   loadConfig,
   loadOptionalConfig,
   saveConfig,
@@ -378,17 +378,19 @@ async function getStatus() {
       closeToTray,
       powerProfile: config.powerProfile,
       maxConcurrentJobs: config.maxConcurrentJobs,
+      maxParallelPreviews: config.maxParallelPreviews,
       renderConcurrency: config.renderConcurrency,
       hardwareAcceleration: config.hardwareAcceleration,
       chromiumGl: config.chromiumGl,
       videoBitrate: config.videoBitrate,
+      renderCapabilities: config.renderCapabilities,
       localRetentionPolicy: config.localRetentionPolicy,
       localRecovery,
       worker: heartbeat.worker || heartbeat,
     };
   } catch (error) {
     const config = await loadOptionalConfig();
-    const powerProfile = getRuntimeWorkerPowerProfile(config.powerProfile);
+    const powerProfile = await getEffectiveRuntimeWorkerPowerProfile(config.powerProfile);
     const localRecovery = await readLocalRecoverySummary();
     closeToTray = config.closeToTray !== false;
     return {
@@ -399,10 +401,12 @@ async function getStatus() {
       closeToTray,
       powerProfile: powerProfile.id,
       maxConcurrentJobs: powerProfile.maxConcurrentJobs,
+      maxParallelPreviews: powerProfile.maxParallelPreviews,
       renderConcurrency: powerProfile.renderConcurrency,
       hardwareAcceleration: powerProfile.hardwareAcceleration,
       chromiumGl: powerProfile.chromiumGl,
       videoBitrate: powerProfile.videoBitrate,
+      renderCapabilities: powerProfile.renderCapabilities,
       localRetentionPolicy: normalizeLocalRetentionPolicy(config.localRetentionPolicy),
       localRecovery,
       message: getWorkerStatusMessage(error),
@@ -528,7 +532,7 @@ async function setApiUrl(_event: Electron.IpcMainInvokeEvent, rawApiUrl: string)
 
 async function setPowerProfile(_event: Electron.IpcMainInvokeEvent, rawPowerProfile: string) {
   const selectedPowerProfile = getWorkerPowerProfile(String(rawPowerProfile || ''));
-  const powerProfile = getRuntimeWorkerPowerProfile(selectedPowerProfile.id);
+  const powerProfile = await getEffectiveRuntimeWorkerPowerProfile(selectedPowerProfile.id);
   const shouldRestart = Boolean(workerAbortController);
   if (shouldRestart) {
     await stopWorker();
@@ -543,20 +547,24 @@ async function setPowerProfile(_event: Electron.IpcMainInvokeEvent, rawPowerProf
     closeToTray,
     powerProfile: powerProfile.id,
     maxConcurrentJobs: powerProfile.maxConcurrentJobs,
+    maxParallelPreviews: powerProfile.maxParallelPreviews,
     renderConcurrency: powerProfile.renderConcurrency,
     hardwareAcceleration: powerProfile.hardwareAcceleration,
     chromiumGl: powerProfile.chromiumGl,
     videoBitrate: powerProfile.videoBitrate,
+    renderCapabilities: powerProfile.renderCapabilities,
   });
 
   if (!shouldRestart) {
     return {
       powerProfile: powerProfile.id,
       maxConcurrentJobs: powerProfile.maxConcurrentJobs,
+      maxParallelPreviews: powerProfile.maxParallelPreviews,
       renderConcurrency: powerProfile.renderConcurrency,
       hardwareAcceleration: powerProfile.hardwareAcceleration,
       chromiumGl: powerProfile.chromiumGl,
       videoBitrate: powerProfile.videoBitrate,
+      renderCapabilities: powerProfile.renderCapabilities,
       restarted: false,
       message: 'Perfil de potencia guardado. Se aplicara al iniciar el worker.',
     };
@@ -567,10 +575,12 @@ async function setPowerProfile(_event: Electron.IpcMainInvokeEvent, rawPowerProf
   return {
     powerProfile: powerProfile.id,
     maxConcurrentJobs: powerProfile.maxConcurrentJobs,
+    maxParallelPreviews: powerProfile.maxParallelPreviews,
     renderConcurrency: powerProfile.renderConcurrency,
     hardwareAcceleration: powerProfile.hardwareAcceleration,
     chromiumGl: powerProfile.chromiumGl,
     videoBitrate: powerProfile.videoBitrate,
+    renderCapabilities: powerProfile.renderCapabilities,
     restarted,
     message: restarted
       ? 'Perfil de potencia guardado y worker reiniciado.'

@@ -7,7 +7,7 @@
     "name": "SofLIA - Engine",
     "email": "soporte@soflia.com"
   },
-  "description": "SofLIA - Engine local Remotion render worker CLI",
+  "description": "SofLIA - Engine local Remotion and HyperFrames render worker",
   "type": "module",
   "main": "dist/electron-main.js",
   "bin": {
@@ -37,7 +37,10 @@
     "asar": true,
     "asarUnpack": [
       "node_modules/@esbuild/**/*",
-      "node_modules/@remotion/compositor-*/*"
+      "node_modules/@remotion/compositor-*/*",
+      "node_modules/@img/**/*",
+      "node_modules/onnxruntime-node/**/*",
+      "node_modules/sharp/**/*"
     ],
     "win": {
       "icon": "build/icon.ico",
@@ -83,6 +86,7 @@
     "@remotion/media-utils": "^4.0.484",
     "@remotion/renderer": "4.0.484",
     "electron-updater": "^6.8.9",
+    "hyperframes": "0.7.107",
     "jszip": "^3.10.1",
     "mediabunny": "^1.47.0",
     "react": "^19.2.7",

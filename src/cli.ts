@@ -2,11 +2,12 @@
 import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import { SofliaWorkerApiClient } from './api-client.js';
-import { loadConfig, saveConfig } from './config.js';
+import { getEffectiveRuntimeWorkerPowerProfile, loadConfig, loadOptionalConfig, saveConfig } from './config.js';
 import { log, logError, sanitizeLog } from './logging.js';
 import { configureWritableWorkingDirectory, getConfigPath, getWorkspaceDir } from './paths.js';
 import { renderClaimedJob } from './render.js';
 import { startWorkerLoop } from './worker-loop.js';
+import { renderHyperframesProject } from './hyperframes-render.js';
 
 function parseArgs(argv: string[]): { command: string; flags: Record<string, string> } {
   const [command = 'help', ...rest] = argv;
@@ -36,6 +37,7 @@ Commands:
   configure --api-url <url> --token <worker_token>
   doctor
   render --job-id <production_job_id>
+  hyperframes-render --project <dir> --output <video.mp4> [--quality standard] [--workers 4] [--no-gpu]
   start [--poll-interval-ms <ms>]
 `);
 }
@@ -110,6 +112,8 @@ async function runDoctor() {
   console.log(`OK API: ${config.apiUrl}`);
   console.log(`OK Workspace: ${workspace}`);
   console.log('OK Token: valido');
+  console.log(`OK Remotion encoder: ${config.renderCapabilities?.remotion.verifiedHardwareEncoder || 'libx264 (CPU)'}`);
+  console.log(`OK HyperFrames encoder: ${config.renderCapabilities?.hyperframes.verifiedHardwareEncoder || 'libx264 (CPU)'}`);
   console.log('Listo para renderizar.');
 }
 
@@ -134,7 +138,15 @@ async function runRender(flags: Record<string, string>) {
       bundleHash: job.bundleHash,
       propsHash: job.propsHash,
     });
-    await renderClaimedJob(client, job, { renderConcurrency: config.renderConcurrency });
+    await renderClaimedJob(client, job, {
+      renderConcurrency: config.renderConcurrency,
+      hardwareAcceleration: config.hardwareAcceleration,
+      chromiumGl: config.chromiumGl,
+      videoBitrate: config.videoBitrate,
+      mediaCacheSizeInBytes: config.mediaCacheSizeInBytes,
+      offthreadVideoCacheSizeInBytes: config.offthreadVideoCacheSizeInBytes,
+      offthreadVideoThreads: config.offthreadVideoThreads,
+    });
     log('Render completado', { jobId });
   } catch (error) {
     const message = sanitizeLog(error instanceof Error ? error.message : String(error));
@@ -149,6 +161,28 @@ async function runRender(flags: Record<string, string>) {
     }
     throw error;
   }
+}
+
+async function runHyperframesRender(flags: Record<string, string>) {
+  if (!flags.project || !flags.output) {
+    throw new Error('hyperframes-render requiere --project <dir> y --output <video.mp4>');
+  }
+  const optionalConfig = await loadOptionalConfig();
+  const profile = await getEffectiveRuntimeWorkerPowerProfile(optionalConfig.powerProfile);
+  const requestedWorkers = flags.workers ? Number(flags.workers) : Math.min(4, Math.max(1, Math.ceil(profile.renderConcurrency / 2)));
+  const quality = flags.quality === 'draft' || flags.quality === 'high' ? flags.quality : 'standard';
+  const result = await renderHyperframesProject({
+    projectDirectory: flags.project,
+    outputPath: flags.output,
+    quality,
+    workers: requestedWorkers,
+    videoBitrate: profile.videoBitrate,
+    browserGpu: flags['no-gpu'] !== 'true',
+    gpuEncoding: flags['no-gpu'] !== 'true',
+    capabilities: profile.renderCapabilities,
+    onOutput: (line) => process.stdout.write(line),
+  });
+  console.log(JSON.stringify(result, null, 2));
 }
 
 async function runStart(flags: Record<string, string>) {
@@ -175,6 +209,10 @@ async function main() {
   }
   if (command === 'render') {
     await runRender(flags);
+    return;
+  }
+  if (command === 'hyperframes-render') {
+    await runHyperframesRender(flags);
     return;
   }
   if (command === 'start') {

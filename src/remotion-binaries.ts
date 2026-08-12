@@ -9,6 +9,10 @@ function unpackAsarPath(resolvedPath: string): string | null {
     : null;
 }
 
+function resolveNativePackageDirectory(packageDirectory: string): string {
+  return unpackAsarPath(packageDirectory) || packageDirectory;
+}
+
 export function getRemotionBinariesDirectory(): string | null {
   const packageName = (() => {
     if (process.platform === 'win32' && process.arch === 'x64') return '@remotion/compositor-win32-x64-msvc';
@@ -21,7 +25,19 @@ export function getRemotionBinariesDirectory(): string | null {
 
   if (!packageName) return null;
   const compositorPackageDir = path.dirname(require.resolve(`${packageName}/package.json`));
-  return unpackAsarPath(compositorPackageDir);
+  return resolveNativePackageDirectory(compositorPackageDir);
+}
+
+export function getRemotionFfmpegPath(): string | null {
+  const binariesDirectory = getRemotionBinariesDirectory();
+  if (!binariesDirectory) return null;
+  return path.join(binariesDirectory, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+}
+
+export function getRemotionFfprobePath(): string | null {
+  const binariesDirectory = getRemotionBinariesDirectory();
+  if (!binariesDirectory) return null;
+  return path.join(binariesDirectory, process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
 }
 
 export function getEsbuildBinaryPath(): string | null {
@@ -40,9 +56,8 @@ export function getEsbuildBinaryPath(): string | null {
 
   if (!packageName) return null;
   const packageDir = path.dirname(require.resolve(`${packageName}/package.json`));
-  const unpackedPackageDir = unpackAsarPath(packageDir);
-  if (!unpackedPackageDir) return null;
-  return path.join(unpackedPackageDir, process.platform === 'win32' ? 'esbuild.exe' : 'bin/esbuild');
+  const nativePackageDir = resolveNativePackageDirectory(packageDir);
+  return path.join(nativePackageDir, process.platform === 'win32' ? 'esbuild.exe' : 'bin/esbuild');
 }
 
 export function configureNativeBinaryPaths(): void {

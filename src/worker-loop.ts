@@ -12,6 +12,7 @@ import { renderClaimedJob } from './render.js';
 import { buildTemplateJob } from './template-build.js';
 import { renderTemplatePreviewJob } from './template-preview.js';
 import type { WorkerRuntimeEvent } from './shared/worker-events.js';
+import { divideRemotionCacheBudget, resolvePreviewExecutionPlan } from './shared/worker-capacity.js';
 
 export interface WorkerLoopEvents {
   onStatus?: (event: WorkerRuntimeEvent) => void;
@@ -144,7 +145,10 @@ export async function startWorkerLoop(
     logError('No se pudo limpiar workspaces temporales antiguos:', error);
   }
 
-  async function processClaimedJob(job: ClaimedJob): Promise<void> {
+  async function processClaimedJob(
+    job: ClaimedJob,
+    execution: { previewRenderConcurrency?: number; previewCacheDivisor?: number } = {},
+  ): Promise<void> {
     const jobType = job.jobType === 'template_build' ? 'template_build' : job.jobType === 'template_preview' ? 'template_preview' : 'render';
     const startedAtMs = Date.now();
     const startedAt = new Date(startedAtMs).toISOString();
@@ -232,7 +236,17 @@ export async function startWorkerLoop(
           },
         });
       } else if (isTemplatePreview) {
+        const previewCacheBudget = divideRemotionCacheBudget({
+          mediaCacheSizeInBytes: config.mediaCacheSizeInBytes || 128 * 1024 * 1024,
+          offthreadVideoCacheSizeInBytes: config.offthreadVideoCacheSizeInBytes || 128 * 1024 * 1024,
+          offthreadVideoThreads: config.offthreadVideoThreads || 1,
+        }, execution.previewCacheDivisor || 1);
         await dependencies.renderTemplatePreview(client, job, {
+          renderConcurrency: execution.previewRenderConcurrency,
+          hardwareAcceleration: config.hardwareAcceleration,
+          chromiumGl: config.chromiumGl,
+          videoBitrate: config.videoBitrate,
+          ...previewCacheBudget,
           localJobStore: localJobStore || undefined,
           localRetentionPolicy: config.localRetentionPolicy,
           onProgress: (progress) => {
@@ -249,6 +263,9 @@ export async function startWorkerLoop(
           hardwareAcceleration: config.hardwareAcceleration,
           chromiumGl: config.chromiumGl,
           videoBitrate: config.videoBitrate,
+          mediaCacheSizeInBytes: config.mediaCacheSizeInBytes,
+          offthreadVideoCacheSizeInBytes: config.offthreadVideoCacheSizeInBytes,
+          offthreadVideoThreads: config.offthreadVideoThreads,
           localJobStore: localJobStore || undefined,
           localRetentionPolicy: config.localRetentionPolicy,
           onProgress: (progress) => {
@@ -361,10 +378,27 @@ export async function startWorkerLoop(
       }
 
       if (jobs.every((job) => job.jobType === 'template_preview')) {
-        await Promise.all(jobs.map((job) => {
-          registerLocalClaim(job);
-          return processClaimedJob(job);
-        }));
+        const previewPlan = resolvePreviewExecutionPlan({
+          jobCount: jobs.length,
+          renderConcurrency: config.renderConcurrency,
+          maxParallelPreviews: config.maxParallelPreviews || config.maxConcurrentJobs,
+        });
+        emit({
+          state: 'online',
+          message: 'Presupuesto de previews asignado',
+          detail: previewPlan,
+        });
+        for (let index = 0; index < jobs.length; index += previewPlan.parallelJobs) {
+          if (shouldStop) break;
+          const batch = jobs.slice(index, index + previewPlan.parallelJobs);
+          await Promise.all(batch.map((job) => {
+            registerLocalClaim(job);
+            return processClaimedJob(job, {
+              previewRenderConcurrency: previewPlan.renderConcurrencyPerJob,
+              previewCacheDivisor: previewPlan.parallelJobs,
+            });
+          }));
+        }
       } else {
         for (const job of jobs) {
           if (shouldStop) break;

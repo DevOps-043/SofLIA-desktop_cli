@@ -40,7 +40,10 @@ describe('worker config', () => {
     assert.equal(config.powerProfile, 'high');
     assert.equal(config.maxConcurrentJobs, 4);
     assert.equal(config.renderConcurrency, getRuntimeWorkerPowerProfile('high').renderConcurrency);
-    assert.equal(config.hardwareAcceleration, 'if-possible');
+    assert.equal(
+      config.hardwareAcceleration,
+      config.renderCapabilities?.remotion.hardwareEncodingAvailable ? 'if-possible' : 'disable',
+    );
     assert.equal(config.chromiumGl, 'angle');
     assert.equal(config.videoBitrate, '8M');
   });

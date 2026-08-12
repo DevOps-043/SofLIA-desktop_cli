@@ -248,6 +248,7 @@ describe('startWorkerLoop', () => {
     let completedCount = 0;
     let activePreviews = 0;
     let maxActivePreviews = 0;
+    const renderConcurrencyByJob = new Map<string, number | undefined>();
 
     await startWorkerLoop({
       signal: controller.signal,
@@ -264,6 +265,7 @@ describe('startWorkerLoop', () => {
           token: 'token',
           powerProfile: 'balanced',
           maxConcurrentJobs: 2,
+          maxParallelPreviews: 2,
           renderConcurrency: 2,
         }),
         createClient: () => ({
@@ -276,10 +278,11 @@ describe('startWorkerLoop', () => {
         createWorkspaceCleanup: createNoopWorkspaceCleanup,
         renderJob: async () => {},
         buildTemplate: async () => {},
-        renderTemplatePreview: async (_client, claimedJob) => {
+        renderTemplatePreview: async (_client, claimedJob, options) => {
           activePreviews += 1;
           maxActivePreviews = Math.max(maxActivePreviews, activePreviews);
           previewJobs.push(claimedJob.jobId);
+          renderConcurrencyByJob.set(claimedJob.jobId, options?.renderConcurrency);
           await new Promise((resolve) => setTimeout(resolve, 1));
           activePreviews -= 1;
         },
@@ -289,6 +292,56 @@ describe('startWorkerLoop', () => {
 
     assert.deepEqual(previewJobs.sort(), ['preview-1', 'preview-2']);
     assert.equal(maxActivePreviews, 2);
+    assert.deepEqual([...renderConcurrencyByJob.values()], [1, 1]);
+  });
+
+  it('processes oversized preview batches in bounded chunks', async () => {
+    const controller = new AbortController();
+    const jobs = Array.from({ length: 5 }, (_, index) => createTemplatePreviewJob(`preview-${index + 1}`));
+    let completedCount = 0;
+    let activePreviews = 0;
+    let maxActivePreviews = 0;
+    const perJobConcurrency: number[] = [];
+
+    await startWorkerLoop({
+      signal: controller.signal,
+      pollIntervalMs: 1,
+      onStatus: (event) => {
+        if (event.state === 'completed' && ++completedCount === jobs.length) controller.abort();
+      },
+      dependencies: {
+        loadConfig: async () => ({
+          apiUrl: 'http://localhost:4000',
+          token: 'token',
+          maxConcurrentJobs: 3,
+          maxParallelPreviews: 2,
+          renderConcurrency: 6,
+          hardwareAcceleration: 'disable',
+          chromiumGl: 'angle',
+        }),
+        createClient: () => ({
+          heartbeat: async () => ({}),
+          claimNext: async () => null,
+          claimNextBatch: async () => jobs,
+          fail: async () => ({}),
+        }),
+        createLocalJobStore: async () => null,
+        createWorkspaceCleanup: createNoopWorkspaceCleanup,
+        renderJob: async () => {},
+        buildTemplate: async () => {},
+        renderTemplatePreview: async (_client, _job, options) => {
+          activePreviews += 1;
+          maxActivePreviews = Math.max(maxActivePreviews, activePreviews);
+          perJobConcurrency.push(options?.renderConcurrency!);
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          activePreviews -= 1;
+        },
+        sleep: async () => {},
+      },
+    });
+
+    assert.equal(maxActivePreviews, 2);
+    assert.deepEqual(perJobConcurrency, [3, 3, 3, 3, 3]);
   });
 
   it('reports the concrete render error code and last observed stage', async () => {
